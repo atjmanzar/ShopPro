@@ -1,0 +1,47 @@
+<UserControl x:Class="ShopPro.UI.Views.SupplierManagementView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Margin="20">
+    
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header Actions -->
+        <Border Grid.Row="0" Style="{StaticResource CardBorderStyle}" Margin="0,0,0,16">
+            <DockPanel>
+                <TextBlock Text="SUPPLIERS &amp; PURCHASE ORDERS" Foreground="{StaticResource PrimaryAccentBrush}" FontSize="18" FontWeight="Bold" VerticalAlignment="Center"/>
+                <Button Content="+ Create Purchase Order" Style="{StaticResource PrimaryButtonStyle}" DockPanel.Dock="Right" Height="36" Click="BtnCreatePo_Click"/>
+            </DockPanel>
+        </Border>
+
+        <!-- Suppliers Grid -->
+        <Border Grid.Row="1" Style="{StaticResource CardBorderStyle}">
+            <DataGrid x:Name="DgSuppliers" AutoGenerateColumns="False" IsReadOnly="True" 
+                      Background="Transparent" RowHeight="40" HeadersVisibility="Column" 
+                      GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#334155" BorderThickness="0">
+                <DataGrid.Resources>
+                    <Style TargetType="DataGridColumnHeader">
+                        <Setter Property="Background" Value="#0F172A" />
+                        <Setter Property="Foreground" Value="#94A3B8" />
+                        <Setter Property="FontWeight" Value="Bold" />
+                        <Setter Property="Padding" Value="10,8" />
+                    </Style>
+                    <Style TargetType="DataGridCell">
+                        <Setter Property="Foreground" Value="White" />
+                        <Setter Property="Padding" Value="10,8" />
+                    </Style>
+                </DataGrid.Resources>
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Supplier / Vendor Name" Binding="{Binding CompanyName}" Width="*"/>
+                    <DataGridTextColumn Header="Contact Person" Binding="{Binding ContactPerson}" Width="160"/>
+                    <DataGridTextColumn Header="Phone" Binding="{Binding Phone}" Width="130"/>
+                    <DataGridTextColumn Header="GSTIN" Binding="{Binding Gstin}" Width="140"/>
+                    <DataGridTextColumn Header="Payable Balance" Binding="{Binding PayableBalance, StringFormat=₹{0:N2}}" Width="140"/>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Border>
+    </Grid>
+</UserControl>

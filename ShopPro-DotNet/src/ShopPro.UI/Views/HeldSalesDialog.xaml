@@ -1,0 +1,47 @@
+<Window x:Class="ShopPro.UI.Views.HeldSalesDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Resume Held Sales Cart" Height="480" Width="600"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Background="{StaticResource BgDarkBrush}">
+    
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="ACTIVE HELD SALES CARTS" Foreground="{StaticResource PrimaryAccentBrush}" FontSize="18" FontWeight="Bold" Margin="0,0,0,16"/>
+
+        <Border Grid.Row="1" Style="{StaticResource CardBorderStyle}" Margin="0,0,0,16">
+            <DataGrid x:Name="DgHeldSales" AutoGenerateColumns="False" IsReadOnly="True" 
+                      Background="Transparent" RowHeight="40" HeadersVisibility="Column" 
+                      GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#334155" BorderThickness="0">
+                <DataGrid.Resources>
+                    <Style TargetType="DataGridColumnHeader">
+                        <Setter Property="Background" Value="#0F172A" />
+                        <Setter Property="Foreground" Value="#94A3B8" />
+                        <Setter Property="FontWeight" Value="Bold" />
+                        <Setter Property="Padding" Value="8,6" />
+                    </Style>
+                    <Style TargetType="DataGridCell">
+                        <Setter Property="Foreground" Value="White" />
+                        <Setter Property="Padding" Value="8,6" />
+                    </Style>
+                </DataGrid.Resources>
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Hold Ref" Binding="{Binding HoldReference}" Width="140"/>
+                    <DataGridTextColumn Header="Customer" Binding="{Binding CustomerName}" Width="160"/>
+                    <DataGridTextColumn Header="Held At" Binding="{Binding HeldAt, StringFormat={}{0:HH:mm:ss}}" Width="100"/>
+                    <DataGridTextColumn Header="Total" Binding="{Binding GrandTotal, StringFormat=₹{0:N2}}" Width="*"/>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Border>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Cancel" Style="{StaticResource PrimaryButtonStyle}" Background="#334155" Width="100" Margin="0,0,12,0" Click="BtnCancel_Click"/>
+            <Button Content="⚡ Resume Selected Cart" Style="{StaticResource PrimaryButtonStyle}" Width="180" Click="BtnResume_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

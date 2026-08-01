@@ -1,0 +1,58 @@
+<UserControl x:Class="ShopPro.UI.Views.DiagnosticsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Margin="20">
+    
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="SYSTEM HEALTH &amp; DIAGNOSTIC REPAIR" Foreground="{StaticResource PrimaryAccentBrush}" FontSize="20" FontWeight="Bold" Margin="0,0,0,20"/>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="380"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Crash Log Viewer -->
+            <Border Grid.Column="0" Style="{StaticResource CardBorderStyle}" Margin="0,0,16,0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Text="Recent Crash &amp; Error Log Trace" Foreground="White" FontSize="16" FontWeight="Bold" Margin="0,0,0,12"/>
+                    <TextBox x:Name="TxtLogs" Grid.Row="1" Background="#0F172A" Foreground="#E2E8F0" FontFamily="Consolas" FontSize="12" AcceptsReturn="True" TextWrapping="Wrap" IsReadOnly="True" VerticalScrollBarVisibility="Auto" Padding="12"/>
+                </Grid>
+            </Border>
+
+            <!-- System Metrics & Repair Tools -->
+            <StackPanel Grid.Column="1">
+                <!-- Health Summary Card -->
+                <Border Style="{StaticResource CardBorderStyle}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="Workstation Health Summary" Foreground="White" FontSize="16" FontWeight="Bold" Margin="0,0,0,12"/>
+                        <TextBlock x:Name="TxtRamUsage" Text="RAM Working Set: 0 MB" Foreground="White" Margin="0,0,0,6"/>
+                        <TextBlock x:Name="TxtDiskSpace" Text="Free Disk Space: 0 GB" Foreground="White" Margin="0,0,0,6"/>
+                        <TextBlock x:Name="TxtDbLatency" Text="Database Ping Latency: 0 ms" Foreground="{StaticResource SuccessBrush}" FontWeight="Bold" Margin="0,0,0,16"/>
+
+                        <Button Content="🔄 Refresh Health Metrics" Style="{StaticResource PrimaryButtonStyle}" Background="#334155" Height="36" Click="BtnRefreshHealth_Click"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Diagnostic Repair Card -->
+                <Border Style="{StaticResource CardBorderStyle}">
+                    <StackPanel>
+                        <TextBlock Text="System Repair &amp; Support" Foreground="White" FontSize="16" FontWeight="Bold" Margin="0,0,0,12"/>
+                        <Button Content="🧹 Run Database VACUUM &amp; Reindex" Style="{StaticResource PrimaryButtonStyle}" Background="#334155" Height="40" Margin="0,0,0,10" Click="BtnVacuum_Click"/>
+                        <Button Content="📋 Export Support Diagnostic Package" Style="{StaticResource PrimaryButtonStyle}" Height="40" Click="BtnExportSupport_Click"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</UserControl>

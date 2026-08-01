@@ -1,0 +1,48 @@
+<Window x:Class="ShopPro.UI.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ShopPro Retail POS — .NET 8 Workstation" Height="768" Width="1280"
+        WindowStartupLocation="CenterScreen" Background="{StaticResource BgDarkBrush}">
+    
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="240"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- Left Navigation Sidebar -->
+        <Border Grid.Column="0" Background="{StaticResource SurfaceDarkBrush}" BorderBrush="{StaticResource SurfaceBorderBrush}" BorderThickness="0,0,1,0">
+            <DockPanel Margin="16">
+                <!-- App Logo/Header -->
+                <StackPanel DockPanel.Dock="Top" Margin="0,10,0,30">
+                    <TextBlock Text="SHOPPRO" Foreground="{StaticResource PrimaryAccentBrush}" FontSize="24" FontWeight="Black" LetterSpacing="1"/>
+                    <TextBlock Text="RETAIL POS v1.6.0" Foreground="{StaticResource TextMutedBrush}" FontSize="10" FontWeight="Bold"/>
+                </StackPanel>
+
+                <!-- Footer User Session Info -->
+                <StackPanel DockPanel.Dock="Bottom" Margin="0,20,0,0">
+                    <Border Background="#0F172A" Padding="12" CornerRadius="6" Margin="0,0,0,12">
+                        <StackPanel>
+                            <TextBlock x:Name="TxtUserFullName" Text="Cashier Name" Foreground="{StaticResource TextPrimaryBrush}" FontWeight="Bold"/>
+                            <TextBlock x:Name="TxtUserRole" Text="CASHIER" Foreground="{StaticResource SuccessBrush}" FontSize="11" FontWeight="Bold" Margin="0,2,0,0"/>
+                        </StackPanel>
+                    </Border>
+                    <Button Content="Logout" Style="{StaticResource PrimaryButtonStyle}" Background="{StaticResource DangerBrush}" Click="BtnLogout_Click"/>
+                </StackPanel>
+
+                <!-- Navigation Buttons -->
+                <StackPanel DockPanel.Dock="Top">
+                    <Button x:Name="BtnNavPos" Content="🛒 POS Checkout" Style="{StaticResource PrimaryButtonStyle}" Margin="0,0,0,10" HorizontalContentAlignment="Left" Click="BtnNavPos_Click"/>
+                    <Button x:Name="BtnNavInventory" Content="📦 Inventory Stock" Style="{StaticResource PrimaryButtonStyle}" Background="#334155" Margin="0,0,0,10" HorizontalContentAlignment="Left" Click="BtnNavInventory_Click"/>
+                    <Button x:Name="BtnNavBarcode" Content="🏷️ Barcode Generator" Style="{StaticResource PrimaryButtonStyle}" Background="#334155" Margin="0,0,0,10" HorizontalContentAlignment="Left" Click="BtnNavBarcode_Click"/>
+                    <Button x:Name="BtnNavReports" Content="📊 Sales Reports" Style="{StaticResource PrimaryButtonStyle}" Background="#334155" Margin="0,0,0,10" HorizontalContentAlignment="Left" Click="BtnNavReports_Click"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- Main Content Host Region -->
+        <Grid Grid.Column="1" Margin="20">
+            <Frame x:Name="MainFrame" NavigationUIVisibility="Hidden"/>
+        </Grid>
+    </Grid>
+</Window>

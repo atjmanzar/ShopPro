@@ -1,0 +1,56 @@
+<Page x:Class="ShopPro.UI.Views.BarcodeGeneratorView"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      Title="Barcode Label Generator">
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="400"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- Product Selector & Controls -->
+        <Border Grid.Column="0" Style="{StaticResource CardBorderStyle}" Margin="0,0,20,0">
+            <StackPanel>
+                <TextBlock Text="BARCODE LABEL GENERATOR" Foreground="{StaticResource PrimaryAccentBrush}" FontSize="18" FontWeight="Bold" Margin="0,0,0,20"/>
+
+                <TextBlock Text="Select Product" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                <ComboBox x:Name="CmbProducts" Height="40" Background="#0F172A" Foreground="White" 
+                          DisplayMemberPath="Name" SelectedValuePath="Id" Margin="0,0,0,16" SelectionChanged="CmbProducts_SelectionChanged"/>
+
+                <TextBlock Text="Barcode Format" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                <ComboBox x:Name="CmbFormat" Height="40" Background="#0F172A" Foreground="White" Margin="0,0,0,20">
+                    <ComboBoxItem Content="Code 128 (Standard Product Barcode)" IsSelected="True"/>
+                    <ComboBoxItem Content="EAN-13 (Commercial Retail)"/>
+                </ComboBox>
+
+                <Button Content="Generate Printable Label" Style="{StaticResource PrimaryButtonStyle}" Height="45" Margin="0,0,0,12" Click="BtnGenerate_Click"/>
+                <Button Content="💾 Save Label Image (PNG)" Style="{StaticResource PrimaryButtonStyle}" Background="#10B981" Height="45" Click="BtnSavePng_Click"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Live Label Canvas Preview -->
+        <Border Grid.Column="1" Style="{StaticResource CardBorderStyle}">
+            <Grid x:Name="GridLabelCanvas">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Text="PRINT PREVIEW LABEL" Foreground="{StaticResource TextMutedBrush}" FontSize="14" FontWeight="Bold" Margin="0,0,0,20"/>
+
+                <Border x:Name="LabelBorder" Grid.Row="1" Background="White" CornerRadius="8" Padding="30" Width="360" Height="220" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <TextBlock x:Name="TxtLabelProductName" Text="Maggi Noodles 280g" Foreground="Black" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center"/>
+                        <TextBlock x:Name="TxtLabelPrice" Text="MRP: ₹48.00" Foreground="Black" FontSize="18" FontWeight="Black" HorizontalAlignment="Center" Margin="0,4,0,12"/>
+
+                        <!-- Rendered Barcode Image -->
+                        <Image x:Name="ImgBarcodePreview" Width="280" Height="80" Stretch="Fill" HorizontalAlignment="Center"/>
+
+                        <TextBlock x:Name="TxtLabelBarcode" Text="8901234567890" Foreground="Black" FontSize="12" FontFamily="Consolas" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</Page>

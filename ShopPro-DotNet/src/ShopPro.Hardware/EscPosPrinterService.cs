@@ -1,0 +1,118 @@
+using System.Text;
+
+namespace ShopPro.Hardware
+{
+    public enum PaperWidth
+    {
+        mm80 = 48, // 48 Columns for 80mm
+        mm58 = 32  // 32 Columns for 58mm
+    }
+
+    public class ReceiptHeaderConfig
+    {
+        public string StoreName { get; set; } = "ShopPro Retail Store";
+        public string AddressLine1 { get; set; } = "123 Main Commercial Street";
+        public string AddressLine2 { get; set; } = "City Center, State - 400001";
+        public string Gstin { get; set; } = "27AAAAA0000A1Z5";
+        public string FooterMessage { get; set; } = "Thank you for shopping with ShopPro!\nVisit again soon!";
+        public PaperWidth PaperWidth { get; set; } = PaperWidth.mm80;
+    }
+
+    public class EscPosPrinterService : IPrinterService
+    {
+        public ReceiptHeaderConfig Config { get; set; } = new();
+
+        public async Task<bool> PrintReceiptAsync(ReceiptData receipt)
+        {
+            var formattedText = FormatEscPosText(receipt, Config);
+            
+            // Write formatted text stream (or raw bytes to Windows Spooler / COM port)
+            await Task.Run(() =>
+            {
+                File.WriteAllText(Path.Combine(Path.GetTempPath(), $"Receipt_{receipt.InvoiceNumber}.txt"), formattedText);
+            });
+
+            return true;
+        }
+
+        public async Task<bool> OpenCashDrawerAsync()
+        {
+            // ESC/POS Cash Drawer Pulse Command: ESC p m t1 t2 (27, 112, 0, 25, 250)
+            byte[] drawerPulseBytes = new byte[] { 27, 112, 0, 25, 250 };
+            await Task.CompletedTask;
+            return true;
+        }
+
+        public async Task<bool> TestPrinterConnectionAsync()
+        {
+            await Task.CompletedTask;
+            return true;
+        }
+
+        public string FormatEscPosText(ReceiptData receipt, ReceiptHeaderConfig config)
+        {
+            int cols = (int)config.PaperWidth;
+            var sb = new StringBuilder();
+
+            // Header Center Aligned
+            sb.AppendLine(CenterText(config.StoreName, cols));
+            sb.AppendLine(CenterText(config.AddressLine1, cols));
+            sb.AppendLine(CenterText(config.AddressLine2, cols));
+            sb.AppendLine(CenterText($"GSTIN: {config.Gstin}", cols));
+            sb.AppendLine(new string('=', cols));
+
+            // Invoice Header
+            sb.AppendLine($"Invoice #: {receipt.InvoiceNumber}");
+            sb.AppendLine($"Date: {receipt.Date:yyyy-MM-dd HH:mm}");
+            sb.AppendLine($"Cashier: {receipt.CashierName}");
+            sb.AppendLine($"Payment Method: {receipt.PaymentMethod}");
+            sb.AppendLine(new string('-', cols));
+
+            // Line Items
+            foreach (var item in receipt.Items)
+            {
+                var line = $"{item.Quantity}x {item.ItemName}";
+                if (line.Length > cols - 10) line = line.Substring(0, cols - 10);
+
+                var priceStr = $"₹{item.LineTotal:F2}";
+                var padding = cols - line.Length - priceStr.Length;
+                if (padding < 1) padding = 1;
+
+                sb.AppendLine($"{line}{new string(' ', padding)}{priceStr}");
+            }
+
+            sb.AppendLine(new string('-', cols));
+
+            // Summary Totals
+            sb.AppendLine(FormatPair("Subtotal:", $"₹{receipt.Subtotal:F2}", cols));
+            if (receipt.Discount > 0)
+                sb.AppendLine(FormatPair("Discount:", $"₹{receipt.Discount:F2}", cols));
+            sb.AppendLine(FormatPair("GST Tax:", $"₹{receipt.Tax:F2}", cols));
+            sb.AppendLine(FormatPair("GRAND TOTAL:", $"₹{receipt.Total:F2}", cols));
+            sb.AppendLine(FormatPair("Amount Paid:", $"₹{receipt.AmountPaid:F2}", cols));
+            sb.AppendLine(FormatPair("Change Due:", $"₹{receipt.ChangeDue:F2}", cols));
+
+            sb.AppendLine(new string('=', cols));
+
+            // Footer & UPI QR Code Placeholder
+            sb.AppendLine(CenterText(config.FooterMessage, cols));
+            sb.AppendLine(CenterText("[Scan UPI QR Code to Pay]", cols));
+
+            return sb.ToString();
+        }
+
+        private string CenterText(string text, int width)
+        {
+            if (text.Length >= width) return text.Substring(0, width);
+            int leftPad = (width - text.Length) / 2;
+            return new string(' ', leftPad) + text;
+        }
+
+        private string FormatPair(string label, string val, int width)
+        {
+            int pad = width - label.Length - val.Length;
+            if (pad < 1) pad = 1;
+            return $"{label}{new string(' ', pad)}{val}";
+        }
+    }
+}

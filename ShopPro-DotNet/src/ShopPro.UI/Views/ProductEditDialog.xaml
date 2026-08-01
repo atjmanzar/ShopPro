@@ -1,0 +1,57 @@
+<Window x:Class="ShopPro.UI.Views.ProductEditDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Product Master Editor" Height="580" Width="480"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Background="{StaticResource BgDarkBrush}">
+    
+    <Grid Margin="24">
+        <StackPanel>
+            <TextBlock x:Name="TxtDialogTitle" Text="Create New Product" Foreground="{StaticResource PrimaryAccentBrush}" FontSize="18" FontWeight="Bold" Margin="0,0,0,16"/>
+
+            <UniformGrid Columns="2" Margin="0,0,0,12">
+                <StackPanel Margin="0,0,8,0">
+                    <TextBlock Text="SKU Code" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                    <TextBox x:Name="TxtSku" Height="36" Background="#0F172A" Foreground="White" BorderBrush="{StaticResource SurfaceBorderBrush}" Padding="8,6"/>
+                </StackPanel>
+                <StackPanel Margin="8,0,0,0">
+                    <TextBlock Text="Barcode (EAN/Code128)" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                    <TextBox x:Name="TxtBarcode" Height="36" Background="#0F172A" Foreground="White" BorderBrush="{StaticResource SurfaceBorderBrush}" Padding="8,6"/>
+                </StackPanel>
+            </UniformGrid>
+
+            <TextBlock Text="Product Full Name" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,4"/>
+            <TextBox x:Name="TxtName" Height="36" Background="#0F172A" Foreground="White" BorderBrush="{StaticResource SurfaceBorderBrush}" Padding="8,6" Margin="0,0,0,12"/>
+
+            <TextBlock Text="Category" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,4"/>
+            <ComboBox x:Name="CmbCategory" Height="36" Background="#0F172A" Foreground="White" DisplayMemberPath="Name" SelectedValuePath="Id" Margin="0,0,0,12"/>
+
+            <UniformGrid Columns="2" Margin="0,0,0,12">
+                <StackPanel Margin="0,0,8,0">
+                    <TextBlock Text="Selling Price (₹)" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                    <TextBox x:Name="TxtPrice" Height="36" Background="#0F172A" Foreground="White" BorderBrush="{StaticResource SurfaceBorderBrush}" Padding="8,6"/>
+                </StackPanel>
+                <StackPanel Margin="8,0,0,0">
+                    <TextBlock Text="Cost Price (₹)" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                    <TextBox x:Name="TxtCost" Height="36" Background="#0F172A" Foreground="White" BorderBrush="{StaticResource SurfaceBorderBrush}" Padding="8,6"/>
+                </StackPanel>
+            </UniformGrid>
+
+            <UniformGrid Columns="2" Margin="0,0,0,20">
+                <StackPanel Margin="0,0,8,0">
+                    <TextBlock Text="Tax Rate (% GST)" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                    <TextBox x:Name="TxtTaxRate" Height="36" Background="#0F172A" Foreground="White" BorderBrush="{StaticResource SurfaceBorderBrush}" Padding="8,6" Text="18.00"/>
+                </StackPanel>
+                <StackPanel Margin="8,0,0,0">
+                    <TextBlock Text="Low Stock Alert Level" Foreground="White" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                    <TextBox x:Name="TxtMinStock" Height="36" Background="#0F172A" Foreground="White" BorderBrush="{StaticResource SurfaceBorderBrush}" Padding="8,6" Text="5"/>
+                </StackPanel>
+            </UniformGrid>
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="Cancel" Style="{StaticResource PrimaryButtonStyle}" Background="#334155" Width="100" Margin="0,0,12,0" Click="BtnCancel_Click"/>
+                <Button Content="Save Product" Style="{StaticResource PrimaryButtonStyle}" Width="140" Click="BtnSave_Click"/>
+            </StackPanel>
+        </StackPanel>
+    </Grid>
+</Window>

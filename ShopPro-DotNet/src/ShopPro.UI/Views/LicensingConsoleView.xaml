@@ -1,0 +1,41 @@
+<UserControl x:Class="ShopPro.UI.Views.LicensingConsoleView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Margin="20">
+    
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="ADMIN COMMERCIAL LICENSING CONSOLE" Foreground="{StaticResource PrimaryAccentBrush}" FontSize="20" FontWeight="Bold" Margin="0,0,0,20"/>
+
+        <Border Grid.Row="1" Style="{StaticResource CardBorderStyle}" Width="540" HorizontalAlignment="Left" VerticalAlignment="Top">
+            <StackPanel>
+                <DockPanel Margin="0,0,0,12">
+                    <TextBlock Text="License Status:" Foreground="{StaticResource TextMutedBrush}" FontSize="14"/>
+                    <TextBlock x:Name="TxtStatus" Text="Valid / Activated" Foreground="{StaticResource SuccessBrush}" FontSize="14" FontWeight="Bold" DockPanel.Dock="Right" HorizontalAlignment="Right"/>
+                </DockPanel>
+
+                <DockPanel Margin="0,0,0,12">
+                    <TextBlock Text="Registered To:" Foreground="{StaticResource TextMutedBrush}" FontSize="14"/>
+                    <TextBlock x:Name="TxtCustomer" Text="Commercial Store Customer" Foreground="White" FontSize="14" FontWeight="Bold" DockPanel.Dock="Right" HorizontalAlignment="Right"/>
+                </DockPanel>
+
+                <DockPanel Margin="0,0,0,12">
+                    <TextBlock Text="Evaluation Trial Days:" Foreground="{StaticResource TextMutedBrush}" FontSize="14"/>
+                    <TextBlock x:Name="TxtTrialDays" Text="N/A (Activated)" Foreground="White" FontSize="14" FontWeight="Bold" DockPanel.Dock="Right" HorizontalAlignment="Right"/>
+                </DockPanel>
+
+                <TextBlock Text="Workstation Machine Lock (Hardware Fingerprint)" Foreground="{StaticResource TextMutedBrush}" Margin="0,8,0,4"/>
+                <TextBox x:Name="TxtMachineFingerprint" Height="36" Background="#0F172A" Foreground="{StaticResource SuccessBrush}" FontFamily="Consolas" FontWeight="Bold" IsReadOnly="True" Padding="8,6" Margin="0,0,0,20"/>
+
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="🔑 Enter License Key" Style="{StaticResource PrimaryButtonStyle}" Height="40" Margin="0,0,10,0" Click="BtnActivate_Click"/>
+                    <Button Content="Deactivate License" Style="{StaticResource PrimaryButtonStyle}" Background="{StaticResource DangerBrush}" Height="40" Click="BtnDeactivate_Click"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>

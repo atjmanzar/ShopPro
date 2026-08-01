@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ShopPro.Data\ShopPro.Data.csproj" />
+    <ProjectReference Include="..\ShopPro.Core\ShopPro.Core.csproj" />
+    <ProjectReference Include="..\ShopPro.Hardware\ShopPro.Hardware.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ZXing.Net" Version="0.16.9" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,75 @@
+<UserControl x:Class="ShopPro.UI.Views.HardwareSettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Margin="20">
+    
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="HARDWARE &amp; PERIPHERAL SETTINGS" Foreground="{StaticResource PrimaryAccentBrush}" FontSize="20" FontWeight="Bold" Margin="0,0,0,20"/>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel Width="560" HorizontalAlignment="Left">
+                <!-- Thermal Printer Setup -->
+                <Border Style="{StaticResource CardBorderStyle}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="Thermal Receipt Printer" Foreground="White" FontSize="16" FontWeight="Bold" Margin="0,0,0,12"/>
+
+                        <TextBlock Text="Printer Model / System Name" Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,4"/>
+                        <TextBox x:Name="TxtPrinterName" Height="36" Background="#0F172A" Foreground="White" BorderBrush="{StaticResource SurfaceBorderBrush}" Padding="8,6" Margin="0,0,0,12"/>
+
+                        <UniformGrid Columns="2" Margin="0,0,0,12">
+                            <StackPanel Margin="0,0,8,0">
+                                <TextBlock Text="Receipt Paper Width" Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,4"/>
+                                <ComboBox x:Name="CmbPaperWidth" Height="36" Background="#0F172A" Foreground="White">
+                                    <ComboBoxItem Content="80mm Standard (48 cols)" IsSelected="True"/>
+                                    <ComboBoxItem Content="58mm Compact (32 cols)"/>
+                                </ComboBox>
+                            </StackPanel>
+                            <StackPanel Margin="8,0,0,0">
+                                <TextBlock Text="Auto Cash Drawer Kick" Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,4"/>
+                                <CheckBox x:Name="ChkCashDrawer" Content="Pulse drawer on checkout" Foreground="White" VerticalAlignment="Center" Margin="0,10,0,0"/>
+                            </StackPanel>
+                        </UniformGrid>
+                    </StackPanel>
+                </Border>
+
+                <!-- VFD Pole Display & Scale Setup -->
+                <Border Style="{StaticResource CardBorderStyle}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="Customer Display &amp; Weighing Scale" Foreground="White" FontSize="16" FontWeight="Bold" Margin="0,0,0,12"/>
+
+                        <UniformGrid Columns="2" Margin="0,0,0,12">
+                            <StackPanel Margin="0,0,8,0">
+                                <TextBlock Text="VFD Pole Display COM Port" Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,4"/>
+                                <TextBox x:Name="TxtVfdCom" Height="36" Background="#0F172A" Foreground="White" BorderBrush="{StaticResource SurfaceBorderBrush}" Padding="8,6" Text="COM1"/>
+                            </StackPanel>
+                            <StackPanel Margin="8,0,0,0">
+                                <TextBlock Text="Weighing Scale COM Port" Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,4"/>
+                                <TextBox x:Name="TxtScaleCom" Height="36" Background="#0F172A" Foreground="White" BorderBrush="{StaticResource SurfaceBorderBrush}" Padding="8,6" Text="COM2"/>
+                            </StackPanel>
+                        </UniformGrid>
+                    </StackPanel>
+                </Border>
+
+                <!-- Store Header & Footer Templates -->
+                <Border Style="{StaticResource CardBorderStyle}" Margin="0,0,0,20">
+                    <StackPanel>
+                        <TextBlock Text="Receipt Header &amp; Footer Template" Foreground="White" FontSize="16" FontWeight="Bold" Margin="0,0,0,12"/>
+
+                        <TextBlock Text="Store GSTIN Tax Number" Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,4"/>
+                        <TextBox x:Name="TxtGstin" Height="36" Background="#0F172A" Foreground="White" BorderBrush="{StaticResource SurfaceBorderBrush}" Padding="8,6" Margin="0,0,0,12"/>
+
+                        <TextBlock Text="Custom Footer Message" Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,4"/>
+                        <TextBox x:Name="TxtFooter" Height="60" TextWrapping="Wrap" AcceptsReturn="True" Background="#0F172A" Foreground="White" BorderBrush="{StaticResource SurfaceBorderBrush}" Padding="8,6"/>
+                    </StackPanel>
+                </Border>
+
+                <Button Content="💾 Save Hardware Configuration" Style="{StaticResource PrimaryButtonStyle}" Height="45" Width="260" HorizontalAlignment="Left" Click="BtnSave_Click"/>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</UserControl>

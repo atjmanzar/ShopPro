@@ -1,0 +1,81 @@
+<UserControl x:Class="ShopPro.UI.Views.DataProtectionView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Margin="20">
+    
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="DATA PROTECTION, BACKUP &amp; RECOVERY" Foreground="{StaticResource PrimaryAccentBrush}" FontSize="20" FontWeight="Bold" Margin="0,0,0,20"/>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="380"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Available Backups Grid -->
+            <Border Grid.Column="0" Style="{StaticResource CardBorderStyle}" Margin="0,0,16,0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <DockPanel Grid.Row="0" Margin="0,0,0,12">
+                        <TextBlock Text="Local Database Backups" Foreground="White" FontSize="16" FontWeight="Bold" VerticalAlignment="Center"/>
+                        <Button Content="⚡ Create Backup Now" Style="{StaticResource PrimaryButtonStyle}" DockPanel.Dock="Right" Height="36" Click="BtnCreateBackup_Click"/>
+                    </DockPanel>
+
+                    <DataGrid x:Name="DgBackups" Grid.Row="1" AutoGenerateColumns="False" IsReadOnly="True" 
+                              Background="Transparent" RowHeight="40" HeadersVisibility="Column" 
+                              GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#334155" BorderThickness="0">
+                        <DataGrid.Resources>
+                            <Style TargetType="DataGridColumnHeader">
+                                <Setter Property="Background" Value="#0F172A" />
+                                <Setter Property="Foreground" Value="#94A3B8" />
+                                <Setter Property="FontWeight" Value="Bold" />
+                                <Setter Property="Padding" Value="10,8" />
+                            </Style>
+                            <Style TargetType="DataGridCell">
+                                <Setter Property="Foreground" Value="White" />
+                                <Setter Property="Padding" Value="10,8" />
+                            </Style>
+                        </DataGrid.Resources>
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Backup File Name" Binding="{Binding FileName}" Width="*"/>
+                            <DataGridTextColumn Header="Size (KB)" Binding="{Binding FileSizeBytes, StringFormat={}{0:N0}}" Width="90"/>
+                            <DataGridTextColumn Header="Created At" Binding="{Binding CreatedAt, StringFormat={}{0:yyyy-MM-dd HH:mm}}" Width="140"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </Border>
+
+            <!-- Diagnostics & Export Sidebar -->
+            <StackPanel Grid.Column="1">
+                <!-- Integrity Diagnostic Card -->
+                <Border Style="{StaticResource CardBorderStyle}" Margin="0,0,0,16">
+                    <StackPanel>
+                        <TextBlock Text="Database Health &amp; Integrity" Foreground="White" FontSize="16" FontWeight="Bold" Margin="0,0,0,12"/>
+                        <TextBlock x:Name="TxtIntegrityStatus" Text="Status: Unknown" Foreground="{StaticResource TextMutedBrush}" Margin="0,0,0,12"/>
+
+                        <Button Content="🔍 Run PRAGMA Integrity Check" Style="{StaticResource PrimaryButtonStyle}" Background="#334155" Height="38" Margin="0,0,0,8" Click="BtnCheckIntegrity_Click"/>
+                        <Button Content="🔄 Restore Selected Backup" Style="{StaticResource PrimaryButtonStyle}" Background="{StaticResource DangerBrush}" Height="38" Click="BtnRestore_Click"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Store Catalog JSON Package -->
+                <Border Style="{StaticResource CardBorderStyle}">
+                    <StackPanel>
+                        <TextBlock Text="Catalog Package Import / Export" Foreground="White" FontSize="16" FontWeight="Bold" Margin="0,0,0,12"/>
+                        <Button Content="📦 Export Catalog JSON Package" Style="{StaticResource PrimaryButtonStyle}" Background="#334155" Height="38" Margin="0,0,0,8" Click="BtnExportCatalog_Click"/>
+                        <Button Content="📥 Import Catalog JSON Package" Style="{StaticResource PrimaryButtonStyle}" Height="38" Click="BtnImportCatalog_Click"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</UserControl>
