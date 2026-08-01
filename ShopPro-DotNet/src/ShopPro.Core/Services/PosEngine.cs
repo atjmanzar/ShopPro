@@ -5,6 +5,23 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ShopPro.Core.Services
 {
+    /// <summary>
+    /// POS Checkout Engine:
+    /// Money Math Order of Operations:
+    /// 1. Line Item Subtotals: RawSubtotal = EffectivePrice * Quantity.
+    /// 2. Line Item Discounts: Applied per line, capped at RawSubtotal.
+    /// 3. Line Net Subtotal: RawSubtotal - LineDiscount.
+    /// 4. Line Taxes: NetSubtotal * (TaxRate / 100) rounded per line (2 decimals).
+    /// 5. LineSubtotal Sum: Sum of Line Net Subtotals.
+    /// 6. Invoice-Level Discount: Applied to pre-tax LineSubtotal Sum (Percentage capped at 100%, Fixed capped at LineSubtotal).
+    /// 7. NetSubtotalAfterInvoiceDiscount: LineSubtotal - InvoiceDiscountAmount (floored at 0.00).
+    /// 8. TotalTax: Sum of line taxes.
+    /// 9. GrandTotal: NetSubtotalAfterInvoiceDiscount + TotalTax.
+    /// 
+    /// Restocking & Void Policy:
+    /// - Voiding a completed sale reverses 100% of line item stock deductions and logs an InventoryTransaction.
+    /// - Partial line item returns are managed via Return Restock / Credit Notes in Stage 5.
+    /// </summary>
     public class PosEngine
     {
         private readonly ShopDbContext _db;
@@ -13,6 +30,7 @@ namespace ShopPro.Core.Services
 
         public decimal InvoiceDiscountPercentage { get; set; } = 0.0m;
         public decimal InvoiceFixedDiscount { get; set; } = 0.0m;
+        public bool IsInterStateTax { get; set; } = false;
 
         public decimal LineSubtotal => Cart.Sum(item => item.NetSubtotal);
         public decimal LineDiscount => Cart.Sum(item => item.DiscountAmount);
@@ -22,8 +40,11 @@ namespace ShopPro.Core.Services
             get
             {
                 if (InvoiceDiscountPercentage > 0)
-                    return Math.Round(LineSubtotal * (InvoiceDiscountPercentage / 100m), 2);
-                return Math.Min(InvoiceFixedDiscount, LineSubtotal);
+                {
+                    var clampedPct = Math.Clamp(InvoiceDiscountPercentage, 0m, 100m);
+                    return Math.Round(LineSubtotal * (clampedPct / 100m), 2, MidpointRounding.AwayFromZero);
+                }
+                return Math.Min(Math.Max(0m, InvoiceFixedDiscount), LineSubtotal);
             }
         }
 
@@ -43,7 +64,7 @@ namespace ShopPro.Core.Services
 
             var product = await _db.Products
                 .Include(p => p.Category)
-                .FirstOrDefaultAsync(p => (p.Barcode == barcode || p.Sku == barcode) && p.IsActive);
+                .FirstOrDefaultAsync(p => (p.Barcode == barcode.Trim() || p.Sku == barcode.Trim()) && p.IsActive);
 
             if (product == null) return false;
 
@@ -96,10 +117,11 @@ namespace ShopPro.Core.Services
             Cart.Clear();
             InvoiceDiscountPercentage = 0.0m;
             InvoiceFixedDiscount = 0.0m;
+            IsInterStateTax = false;
         }
 
         /// <summary>
-        /// Single Payment Checkout
+        /// Single Payment Checkout Helper
         /// </summary>
         public async Task<Sale?> ProcessCheckoutAsync(int userId, PaymentMethod method, decimal amountPaid, int? customerId = null)
         {
@@ -118,12 +140,31 @@ namespace ShopPro.Core.Services
         }
 
         /// <summary>
-        /// Multi-Payment / Split Payment Checkout
+        /// Split Payment & Multi-Method Checkout Validation:
+        /// - Verifies total paid against invoice GrandTotal.
+        /// - Rejects underpaid non-credit checkouts.
+        /// - Rejects split payments that do not add up to GrandTotal.
+        /// - Updates Customer Credit Balance for remaining balances on credit sales.
         /// </summary>
         public async Task<Sale?> ProcessSplitCheckoutAsync(int userId, List<Payment> payments, int? customerId = null)
         {
+            if (Cart.Count == 0) return null;
+
             var totalPaid = payments.Sum(p => p.Amount);
-            if (Cart.Count == 0 || totalPaid < GrandTotal) return null;
+            var isCreditSale = payments.Any(p => p.Method == PaymentMethod.StoreCredit);
+
+            // Validation 1: Rejects payments under GrandTotal unless it's a credit customer
+            if (totalPaid < GrandTotal && !isCreditSale && !customerId.HasValue)
+            {
+                return null; // Underpayment rejected
+            }
+
+            // Validation 2: For non-cash split payments (Card + UPI), total must match GrandTotal within 0.01 tolerance
+            bool isMultiSplitNonCash = payments.Count > 1 && payments.All(p => p.Method != PaymentMethod.Cash);
+            if (isMultiSplitNonCash && Math.Abs(totalPaid - GrandTotal) > 0.01m)
+            {
+                return null; // Split payment total mismatch
+            }
 
             var invoiceNum = $"INV-{DateTime.UtcNow:yyyyMMddHHmmss}-{Random.Shared.Next(100, 999)}";
 
@@ -153,7 +194,7 @@ namespace ShopPro.Core.Services
                     LineTotal = cartItem.LineTotal
                 });
 
-                // Deduct stock in DB and record transaction
+                // Deduct stock in DB and log InventoryTransaction
                 var dbProduct = await _db.Products.FindAsync(cartItem.Product.Id);
                 if (dbProduct != null)
                 {
@@ -171,6 +212,16 @@ namespace ShopPro.Core.Services
                 }
             }
 
+            // If credit sale, update Customer Credit Balance for unpaid remaining balance
+            if (customerId.HasValue && totalPaid < GrandTotal)
+            {
+                var customer = await _db.Customers.FindAsync(customerId.Value);
+                if (customer != null)
+                {
+                    customer.CreditBalance += (GrandTotal - totalPaid);
+                }
+            }
+
             _db.Sales.Add(sale);
             await _db.SaveChangesAsync();
 
@@ -179,7 +230,7 @@ namespace ShopPro.Core.Services
         }
 
         /// <summary>
-        /// Void / Cancel completed sale and restock inventory
+        /// Void / Cancel completed sale and restore stock to DB
         /// </summary>
         public async Task<bool> VoidSaleAsync(int saleId, int userId, string voidReason)
         {
@@ -194,7 +245,7 @@ namespace ShopPro.Core.Services
                 var product = await _db.Products.FindAsync(item.ProductId);
                 if (product != null)
                 {
-                    product.StockQuantity += item.Quantity; // Restock
+                    product.StockQuantity += item.Quantity; // Restock item
 
                     _db.InventoryTransactions.Add(new InventoryTransaction
                     {

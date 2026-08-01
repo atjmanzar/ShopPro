@@ -6,31 +6,48 @@ namespace ShopPro.Tests
     public class TaxEngineTests
     {
         [Fact]
-        public void CalculateTax_IntraState_SplitsCgstAndSgstEqually()
+        public void CalculateTax_IntraState_SplitsCgstAndSgst5050()
         {
-            // Arrange & Act (Net Amount ₹1000 @ 18% GST)
-            var result = TaxEngine.CalculateTax(1000.00m, 18.00m, isInterState: false);
+            // Hand Calculation:
+            // Net Amount: ₹1000.00, Tax Rate: 18%
+            // Total Tax: 1000 * 0.18 = ₹180.00
+            // CGST (50%): ₹90.00, SGST (50%): ₹90.00, IGST: ₹0.00
+            var breakdown = TaxEngine.CalculateTax(1000.00m, 18.00m, isInterState: false);
 
-            // Assert
-            Assert.Equal(180.00m, result.TotalTaxAmount);
-            Assert.Equal(90.00m, result.CgstAmount); // 9% CGST
-            Assert.Equal(90.00m, result.SgstAmount); // 9% SGST
-            Assert.Equal(0.00m, result.IgstAmount);
-            Assert.False(result.IsInterState);
+            Assert.Equal(180.00m, breakdown.TotalTaxAmount);
+            Assert.Equal(90.00m, breakdown.CgstAmount);
+            Assert.Equal(90.00m, breakdown.SgstAmount);
+            Assert.Equal(0.00m, breakdown.IgstAmount);
+            Assert.False(breakdown.IsInterState);
         }
 
         [Fact]
         public void CalculateTax_InterState_Allocates100PercentToIgst()
         {
-            // Arrange & Act (Net Amount ₹500 @ 12% GST Inter-state)
-            var result = TaxEngine.CalculateTax(500.00m, 12.00m, isInterState: true);
+            // Hand Calculation:
+            // Net Amount: ₹1000.00, Tax Rate: 18%
+            // Total Tax: 1000 * 0.18 = ₹180.00
+            // CGST: ₹0.00, SGST: ₹0.00, IGST (100%): ₹180.00
+            var breakdown = TaxEngine.CalculateTax(1000.00m, 18.00m, isInterState: true);
 
-            // Assert
-            Assert.Equal(60.00m, result.TotalTaxAmount);
-            Assert.Equal(0.00m, result.CgstAmount);
-            Assert.Equal(0.00m, result.SgstAmount);
-            Assert.Equal(60.00m, result.IgstAmount); // 12% IGST
-            Assert.True(result.IsInterState);
+            Assert.Equal(180.00m, breakdown.TotalTaxAmount);
+            Assert.Equal(0.00m, breakdown.CgstAmount);
+            Assert.Equal(0.00m, breakdown.SgstAmount);
+            Assert.Equal(180.00m, breakdown.IgstAmount);
+            Assert.True(breakdown.IsInterState);
+        }
+
+        [Fact]
+        public void CalculateTax_PennyRounding_EnsuresCgstAndSgstSumToTotalTax()
+        {
+            // Hand Calculation:
+            // Net Amount: ₹99.99, Tax Rate: 5%
+            // Total Tax: 99.99 * 0.05 = 4.9995 => Rounded to ₹5.00
+            // CGST: 5.00 / 2 = ₹2.50, SGST: 5.00 - 2.50 = ₹2.50
+            var breakdown = TaxEngine.CalculateTax(99.99m, 5.00m, isInterState: false);
+
+            Assert.Equal(5.00m, breakdown.TotalTaxAmount);
+            Assert.Equal(breakdown.TotalTaxAmount, breakdown.CgstAmount + breakdown.SgstAmount);
         }
     }
 }
