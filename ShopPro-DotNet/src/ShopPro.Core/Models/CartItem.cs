@@ -3,13 +3,15 @@ using ShopPro.Data.Entities;
 namespace ShopPro.Core.Models
 {
     /// <summary>
-    /// Line Item Money Calculations:
-    /// - EffectivePrice: PriceOverride if present, else UnitPrice.
-    /// - RawSubtotal: EffectivePrice * Quantity.
-    /// - DiscountAmount: Capped at RawSubtotal. Percentage > 100% is clamped to 100%.
-    /// - NetSubtotal: RawSubtotal - DiscountAmount (floored at 0.00).
-    /// - TaxAmount: NetSubtotal * (TaxRate / 100) rounded to 2 decimal places per line.
-    /// - LineTotal: NetSubtotal + TaxAmount.
+    /// Line Item Money Calculations & Order of Operations:
+    /// 1. EffectivePrice: PriceOverride if specified (>= 0), else UnitPrice.
+    /// 2. RawSubtotal: EffectivePrice * Quantity.
+    /// 3. Line DiscountAmount: Applied to RawSubtotal. Percentage > 100% is clamped to 100%, fixed discount is capped at RawSubtotal.
+    /// 4. NetSubtotal (Pre-Invoice Discount): RawSubtotal - Line DiscountAmount (floored at 0.00).
+    /// 5. AllocatedInvoiceDiscount: Proportionally allocated share of invoice-level discount based on LineSubtotal ratio.
+    /// 6. FinalTaxableAmount: NetSubtotal - AllocatedInvoiceDiscount (floored at 0.00).
+    /// 7. TaxAmount: FinalTaxableAmount * (TaxRate / 100) rounded to 2 decimal places (AwayFromZero). Tax is calculated strictly on the post-discount taxable amount paid by customer under GST.
+    /// 8. LineTotal: FinalTaxableAmount + TaxAmount.
     /// </summary>
     public class CartItem
     {
@@ -21,6 +23,11 @@ namespace ShopPro.Core.Models
         public decimal DiscountPercentage { get; set; } = 0.0m;
         public decimal FixedDiscount { get; set; } = 0.0m;
         public decimal TaxRate { get; set; } = 18.00m;
+
+        /// <summary>
+        /// Share of invoice-level discount allocated to this line item
+        /// </summary>
+        public decimal AllocatedInvoiceDiscount { get; set; } = 0.0m;
 
         public decimal EffectivePrice => PriceOverride.HasValue && PriceOverride.Value >= 0 ? PriceOverride.Value : UnitPrice;
         public decimal RawSubtotal => EffectivePrice * Quantity;
@@ -39,7 +46,11 @@ namespace ShopPro.Core.Models
         }
 
         public decimal NetSubtotal => Math.Max(0m, RawSubtotal - DiscountAmount);
-        public decimal TaxAmount => Math.Round(NetSubtotal * (TaxRate / 100m), 2, MidpointRounding.AwayFromZero);
-        public decimal LineTotal => NetSubtotal + TaxAmount;
+
+        public decimal FinalTaxableAmount => Math.Max(0m, NetSubtotal - AllocatedInvoiceDiscount);
+
+        public decimal TaxAmount => Math.Round(FinalTaxableAmount * (TaxRate / 100m), 2, MidpointRounding.AwayFromZero);
+
+        public decimal LineTotal => FinalTaxableAmount + TaxAmount;
     }
 }

@@ -3,6 +3,13 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 namespace ShopPro.Data.Entities
 {
+    public enum SaleStatus
+    {
+        Completed,
+        Voided,
+        Returned
+    }
+
     public class Sale
     {
         [Key]
@@ -29,6 +36,11 @@ namespace ShopPro.Data.Entities
 
         [Column(TypeName = "decimal(18, 2)")]
         public decimal GrandTotal { get; set; }
+
+        [Column(TypeName = "decimal(18, 2)")]
+        public decimal ChangeDue { get; set; } = 0.00m;
+
+        public SaleStatus Status { get; set; } = SaleStatus.Completed;
 
         public DateTime SaleDate { get; set; } = DateTime.UtcNow;
 

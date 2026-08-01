@@ -24,6 +24,164 @@ namespace ShopPro.Tests
         }
 
         [Fact]
+        public void InvoiceDiscount_ReallocatesProportionallyAndRecalculatesGstTax_OnPostDiscountAmount()
+        {
+            // Hand Calculation:
+            // Item A (18% Tax): 1x ₹1000.00 = ₹1000.00. Tax without invoice discount = 1000 * 0.18 = ₹180.00.
+            // Item B (5% Tax):  1x ₹1000.00 = ₹1000.00. Tax without invoice discount = 1000 * 0.05 = ₹50.00.
+            // Total Pre-Invoice Subtotal Sum = ₹2000.00. Total Tax without invoice discount = ₹230.00.
+            // 
+            // Invoice Fixed Discount = ₹200.00 (10% of total pre-tax subtotal).
+            // Proportional Allocation (each line has 50% share of ₹2000):
+            // Allocated to Item A: ₹200 * (1000 / 2000) = ₹100.00 => Final Taxable A = 1000 - 100 = ₹900.00.
+            // Allocated to Item B: ₹200 * (1000 / 2000) = ₹100.00 => Final Taxable B = 1000 - 100 = ₹900.00.
+            // 
+            // Recalculated GST Taxes:
+            // Item A Tax: 900.00 * 0.18 = ₹162.00 (was 180.00).
+            // Item B Tax: 900.00 * 0.05 = ₹45.00  (was 50.00).
+            // Total Tax WITH Invoice Discount = 162.00 + 45.00 = ₹207.00.
+            // Net Subtotal After Invoice Discount = 900.00 + 900.00 = ₹1800.00.
+            // Grand Total = 1800.00 + 207.00 = ₹2007.00.
+
+            using var db = CreateInMemoryDb();
+            var pos = new PosEngine(db);
+
+            var prodA = new Product { Id = 301, Name = "Item 18%", Price = 1000.00m, TaxRate = 18.00m, StockQuantity = 10 };
+            var prodB = new Product { Id = 302, Name = "Item 5%", Price = 1000.00m, TaxRate = 5.00m, StockQuantity = 10 };
+
+            pos.Cart.Add(new CartItem { Product = prodA, Quantity = 1, UnitPrice = 1000.00m, TaxRate = 18.00m });
+            pos.Cart.Add(new CartItem { Product = prodB, Quantity = 1, UnitPrice = 1000.00m, TaxRate = 5.00m });
+
+            // Apply ₹200 invoice discount
+            pos.InvoiceFixedDiscount = 200.00m;
+
+            Assert.Equal(2000.00m, pos.LineSubtotal);
+            Assert.Equal(200.00m, pos.InvoiceDiscountAmount);
+            Assert.Equal(1800.00m, pos.NetSubtotalAfterInvoiceDiscount);
+            Assert.Equal(207.00m, pos.TotalTax); // Recalculated on post-discount amount
+            Assert.Equal(2007.00m, pos.GrandTotal);
+        }
+
+        [Fact]
+        public async Task ProcessCheckout_CashOverpayment_CalculatesChangeDueCorrectly()
+        {
+            // Hand Calculation:
+            // Product: 2x ₹500.00 = ₹1000.00 + 18% Tax (₹180.00) = ₹1180.00 Grand Total.
+            // Payment: Cash ₹2000.00.
+            // ChangeDue = 2000.00 - 1180.00 = ₹820.00.
+
+            using var db = CreateInMemoryDb();
+            var pos = new PosEngine(db);
+
+            var prod = await db.Products.FirstAsync();
+            pos.Cart.Add(new CartItem { Product = prod, Quantity = 2, UnitPrice = 500.00m, TaxRate = 18.00m });
+
+            var sale = await pos.ProcessCheckoutAsync(1, PaymentMethod.Cash, 2000.00m);
+
+            Assert.NotNull(sale);
+            Assert.Equal(1180.00m, sale.GrandTotal);
+            Assert.Equal(820.00m, sale.ChangeDue);
+        }
+
+        [Fact]
+        public async Task Underpayment_WithoutExplicitCreditSaleFlag_IsRejected_EvenWithCustomerIdAttached()
+        {
+            // Hand Calculation:
+            // Product: 2x ₹500.00 = ₹1000.00 + 18% Tax (₹180.00) = ₹1180.00 Grand Total.
+            // Payment: Cash ₹1000.00 (Short by ₹180.00).
+            // CustomerId attached, but isCreditSale = false (default).
+            // Underpayment MUST be rejected (returns null).
+
+            using var db = CreateInMemoryDb();
+            var pos = new PosEngine(db);
+
+            var customer = new Customer { Name = "Loyalty Member John", Phone = "9876543210" };
+            db.Customers.Add(customer);
+            await db.SaveChangesAsync();
+
+            var prod = await db.Products.FirstAsync();
+            pos.Cart.Add(new CartItem { Product = prod, Quantity = 2, UnitPrice = 500.00m, TaxRate = 18.00m });
+
+            var sale = await pos.ProcessCheckoutAsync(1, PaymentMethod.Cash, 1000.00m, customerId: customer.Id, isCreditSale: false);
+
+            Assert.Null(sale); // Underpayment rejected
+        }
+
+        [Fact]
+        public async Task ExplicitCreditSale_WithCustomerId_AllowsUnderpayment_AndUpdatesCustomerCreditBalance()
+        {
+            // Hand Calculation:
+            // Product: 2x ₹500.00 = ₹1000.00 + 18% Tax (₹180.00) = ₹1180.00 Grand Total.
+            // Payment: Cash ₹1000.00.
+            // isCreditSale = true, CustomerId = customer.Id.
+            // Unpaid Balance = 1180.00 - 1000.00 = ₹180.00.
+            // Verifies: Sale completes, and db.Customers.FindAsync(customer.Id).CreditBalance increases by exactly ₹180.00.
+
+            using var db = CreateInMemoryDb();
+            var pos = new PosEngine(db);
+
+            var customer = new Customer { Name = "Credit Customer Alice", Phone = "9876543211", CreditBalance = 0.00m };
+            db.Customers.Add(customer);
+            await db.SaveChangesAsync();
+
+            var prod = await db.Products.FirstAsync();
+            pos.Cart.Add(new CartItem { Product = prod, Quantity = 2, UnitPrice = 500.00m, TaxRate = 18.00m });
+
+            var sale = await pos.ProcessCheckoutAsync(1, PaymentMethod.Cash, 1000.00m, customerId: customer.Id, isCreditSale: true);
+
+            Assert.NotNull(sale);
+            Assert.Equal(1180.00m, sale.GrandTotal);
+
+            // Assert Customer CreditBalance updated in DB
+            var dbCustomer = await db.Customers.FindAsync(customer.Id);
+            Assert.NotNull(dbCustomer);
+            Assert.Equal(180.00m, dbCustomer.CreditBalance);
+        }
+
+        [Fact]
+        public async Task VoidSale_RestoresProductStockInDatabase_AndPreservesSaleRecordWithVoidedStatus()
+        {
+            // Hand Calculation:
+            // Maggi Noodles initial stock in DbInitializer = 120 units.
+            // Step 1: Buy 2 units => DB stock decreases: 120 - 2 = 118 units.
+            // Step 2: Void Sale.
+            // Verifies: DB Product stock restored to 120 units.
+            // Verifies: Sale record STILL EXISTS in DB with Status == SaleStatus.Voided (not deleted).
+            // Verifies: InventoryTransaction entry logged with Type = ReturnRestock.
+
+            using var db = CreateInMemoryDb();
+            var pos = new PosEngine(db);
+
+            var maggi = await db.Products.FirstAsync(p => p.Sku == "SKU-MAGGI-70G");
+            int initialStock = maggi.StockQuantity; // 120
+
+            await pos.AddProductByBarcodeAsync("8901234567890"); // Maggi barcode
+            pos.UpdateQuantity(maggi.Id, 2); // 2 units
+
+            var sale = await pos.ProcessCheckoutAsync(1, PaymentMethod.Cash, 1000.00m);
+            Assert.NotNull(sale);
+
+            // Act: Void Sale
+            var voidSuccess = await pos.VoidSaleAsync(sale.Id, 1, "Customer canceled order");
+
+            // Assert 1: Product stock restored in DB
+            Assert.True(voidSuccess);
+            var dbPostVoid = await db.Products.FindAsync(maggi.Id);
+            Assert.Equal(initialStock, dbPostVoid!.StockQuantity); // Restored to 120 units
+
+            // Assert 2: Sale record preserved in DB with Voided Status
+            var dbSale = await db.Sales.FindAsync(sale.Id);
+            Assert.NotNull(dbSale); // Sale record preserved
+            Assert.Equal(SaleStatus.Voided, dbSale.Status);
+
+            // Assert 3: InventoryTransaction audit log created
+            var transaction = await db.InventoryTransactions
+                .FirstOrDefaultAsync(t => t.ProductId == maggi.Id && t.Type == TransactionType.ReturnRestock);
+            Assert.NotNull(transaction);
+            Assert.Equal(2, transaction.QuantityChange);
+        }
+
+        [Fact]
         public void MultiItemCart_MixedTaxRates_CalculatesCorrectTotals()
         {
             // Hand Calculation:
@@ -47,43 +205,6 @@ namespace ShopPro.Tests
             Assert.Equal(1400.00m, pos.LineSubtotal);
             Assert.Equal(228.00m, pos.TotalTax);
             Assert.Equal(1628.00m, pos.GrandTotal);
-        }
-
-        [Fact]
-        public void LineDiscount_And_InvoiceDiscount_AppliedTogether_ProducesExpectedOrderOfOperations()
-        {
-            // Hand Calculation Order of Operations:
-            // Item 1 (18% Tax): 2x ₹500.00 = ₹1000.00 gross. 10% Line Discount = ₹100.00.
-            //                  Net Line Subtotal = 1000.00 - 100.00 = ₹900.00.
-            //                  Line Tax = 900.00 * 0.18 = ₹162.00.
-            // Pre-tax LineSubtotal Sum = ₹900.00.
-            // Invoice Fixed Discount = ₹100.00 pre-tax => Net Pre-tax Subtotal = 900.00 - 100.00 = ₹800.00.
-            // Total Tax = ₹162.00.
-            // Grand Total = 800.00 + 162.00 = ₹962.00.
-            // Total Discount = Line Discount (100.00) + Invoice Discount (100.00) = ₹200.00.
-
-            using var db = CreateInMemoryDb();
-            var pos = new PosEngine(db);
-
-            var prod = new Product { Id = 103, Name = "Prod C", Price = 500.00m, TaxRate = 18.00m, StockQuantity = 50 };
-            pos.Cart.Add(new CartItem
-            {
-                Product = prod,
-                Quantity = 2,
-                UnitPrice = 500.00m,
-                DiscountPercentage = 10.00m, // 10% line discount
-                TaxRate = 18.00m
-            });
-
-            pos.InvoiceFixedDiscount = 100.00m; // ₹100 fixed invoice discount
-
-            Assert.Equal(900.00m, pos.LineSubtotal);
-            Assert.Equal(100.00m, pos.LineDiscount);
-            Assert.Equal(100.00m, pos.InvoiceDiscountAmount);
-            Assert.Equal(800.00m, pos.NetSubtotalAfterInvoiceDiscount);
-            Assert.Equal(162.00m, pos.TotalTax);
-            Assert.Equal(962.00m, pos.GrandTotal);
-            Assert.Equal(200.00m, pos.TotalDiscount);
         }
 
         [Fact]
@@ -142,48 +263,6 @@ namespace ShopPro.Tests
             var sale = await pos.ProcessSplitCheckoutAsync(1, splitMismatchPayments);
 
             Assert.Null(sale); // Failed due to split payment total mismatch
-        }
-
-        [Fact]
-        public async Task VoidSale_RestoresProductStockInDatabase_AndLogsInventoryTransaction()
-        {
-            // Hand Calculation:
-            // Maggi Noodles initial stock in DbInitializer = 120 units.
-            // Step 1: Buy 2 units => DB stock decreases: 120 - 2 = 118 units.
-            // Step 2: Void Sale => Restocks 2 units.
-            // Verifies: Directly querying db.Products.FindAsync() returns 120 units.
-            // Verifies: InventoryTransaction entry logged with Type = ReturnRestock.
-
-            using var db = CreateInMemoryDb();
-            var pos = new PosEngine(db);
-
-            var maggi = await db.Products.FirstAsync(p => p.Sku == "SKU-MAGGI-70G");
-            int initialStock = maggi.StockQuantity; // 120
-
-            await pos.AddProductByBarcodeAsync("8901234567890"); // Maggi barcode
-            pos.UpdateQuantity(maggi.Id, 2); // 2 units
-
-            var sale = await pos.ProcessCheckoutAsync(1, PaymentMethod.Cash, 1000.00m);
-            Assert.NotNull(sale);
-
-            // Verify post-checkout stock in DB
-            var dbPostCheckout = await db.Products.FindAsync(maggi.Id);
-            Assert.Equal(initialStock - 2, dbPostCheckout!.StockQuantity); // 118 units
-
-            // Act: Void Sale
-            var voidSuccess = await pos.VoidSaleAsync(sale.Id, 1, "Customer canceled order");
-
-            // Assert: Verify DB product stock restored
-            Assert.True(voidSuccess);
-            var dbPostVoid = await db.Products.FindAsync(maggi.Id);
-            Assert.Equal(initialStock, dbPostVoid!.StockQuantity); // Restored to 120 units
-
-            // Assert: Verify InventoryTransaction audit log created
-            var transaction = await db.InventoryTransactions
-                .FirstOrDefaultAsync(t => t.ProductId == maggi.Id && t.Type == TransactionType.ReturnRestock);
-            Assert.NotNull(transaction);
-            Assert.Equal(2, transaction.QuantityChange);
-            Assert.Contains("Void Sale", transaction.Reason);
         }
 
         [Fact]

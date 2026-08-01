@@ -7,20 +7,22 @@ namespace ShopPro.Core.Services
 {
     /// <summary>
     /// POS Checkout Engine:
-    /// Money Math Order of Operations:
-    /// 1. Line Item Subtotals: RawSubtotal = EffectivePrice * Quantity.
-    /// 2. Line Item Discounts: Applied per line, capped at RawSubtotal.
-    /// 3. Line Net Subtotal: RawSubtotal - LineDiscount.
-    /// 4. Line Taxes: NetSubtotal * (TaxRate / 100) rounded per line (2 decimals).
-    /// 5. LineSubtotal Sum: Sum of Line Net Subtotals.
-    /// 6. Invoice-Level Discount: Applied to pre-tax LineSubtotal Sum (Percentage capped at 100%, Fixed capped at LineSubtotal).
-    /// 7. NetSubtotalAfterInvoiceDiscount: LineSubtotal - InvoiceDiscountAmount (floored at 0.00).
-    /// 8. TotalTax: Sum of line taxes.
-    /// 9. GrandTotal: NetSubtotalAfterInvoiceDiscount + TotalTax.
+    /// Money Math Order of Operations (Indian GST Compliant):
+    /// 1. Line Item Subtotal: RawSubtotal = EffectivePrice * Quantity.
+    /// 2. Line Item Discount: DiscountAmount = DiscountEngine.CalculateDiscount(RawSubtotal, Value, Type).
+    /// 3. Pre-Invoice Line Net: NetSubtotal = RawSubtotal - DiscountAmount (floored at 0.00).
+    /// 4. LineSubtotal Sum: Sum of all line NetSubtotals.
+    /// 5. Invoice Discount Calculation: InvoiceDiscountAmount calculated on LineSubtotal Sum (Percentage capped at 100%, Fixed capped at LineSubtotal).
+    /// 6. Proportional Invoice Discount Allocation: InvoiceDiscountAmount is allocated proportionally to each line item based on its share of LineSubtotal.
+    /// 7. Final Line Taxable Amount: FinalTaxableAmount = NetSubtotal - AllocatedInvoiceDiscount (floored at 0.00).
+    /// 8. Line Tax Calculation: TaxAmount = FinalTaxableAmount * (TaxRate / 100) rounded per line (2 decimals AwayFromZero). Under GST, tax is charged strictly on the net post-discount amount paid by the customer.
+    /// 9. NetSubtotalAfterInvoiceDiscount: Sum of FinalTaxableAmount across all lines.
+    /// 10. TotalTax: Sum of Line TaxAmounts across all lines.
+    /// 11. GrandTotal: NetSubtotalAfterInvoiceDiscount + TotalTax.
     /// 
-    /// Restocking & Void Policy:
+    /// Restocking & Audit Preservation Policy:
     /// - Voiding a completed sale reverses 100% of line item stock deductions and logs an InventoryTransaction.
-    /// - Partial line item returns are managed via Return Restock / Credit Notes in Stage 5.
+    /// - Voided sales are preserved in the database with Status = SaleStatus.Voided for tax filing and audit compliance.
     /// </summary>
     public class PosEngine
     {
@@ -39,17 +41,71 @@ namespace ShopPro.Core.Services
         {
             get
             {
+                var subtotal = LineSubtotal;
+                if (subtotal <= 0) return 0.0m;
+
                 if (InvoiceDiscountPercentage > 0)
                 {
                     var clampedPct = Math.Clamp(InvoiceDiscountPercentage, 0m, 100m);
-                    return Math.Round(LineSubtotal * (clampedPct / 100m), 2, MidpointRounding.AwayFromZero);
+                    return Math.Round(subtotal * (clampedPct / 100m), 2, MidpointRounding.AwayFromZero);
                 }
-                return Math.Min(Math.Max(0m, InvoiceFixedDiscount), LineSubtotal);
+                return Math.Min(Math.Max(0m, InvoiceFixedDiscount), subtotal);
             }
         }
 
-        public decimal NetSubtotalAfterInvoiceDiscount => Math.Max(0m, LineSubtotal - InvoiceDiscountAmount);
-        public decimal TotalTax => Cart.Sum(item => item.TaxAmount);
+        public void RecalculateCartDiscountsAndTaxes()
+        {
+            if (Cart.Count == 0) return;
+
+            var subtotal = LineSubtotal;
+            var invDiscount = InvoiceDiscountAmount;
+
+            if (subtotal <= 0 || invDiscount <= 0)
+            {
+                foreach (var item in Cart)
+                {
+                    item.AllocatedInvoiceDiscount = 0.0m;
+                }
+                return;
+            }
+
+            decimal accumulatedAllocated = 0.0m;
+            for (int i = 0; i < Cart.Count; i++)
+            {
+                var item = Cart[i];
+                if (i == Cart.Count - 1)
+                {
+                    // Last item gets remaining penny difference for exact sum
+                    item.AllocatedInvoiceDiscount = invDiscount - accumulatedAllocated;
+                }
+                else
+                {
+                    var ratio = item.NetSubtotal / subtotal;
+                    var allocated = Math.Round(invDiscount * ratio, 2, MidpointRounding.AwayFromZero);
+                    item.AllocatedInvoiceDiscount = allocated;
+                    accumulatedAllocated += allocated;
+                }
+            }
+        }
+
+        public decimal NetSubtotalAfterInvoiceDiscount
+        {
+            get
+            {
+                RecalculateCartDiscountsAndTaxes();
+                return Cart.Sum(item => item.FinalTaxableAmount);
+            }
+        }
+
+        public decimal TotalTax
+        {
+            get
+            {
+                RecalculateCartDiscountsAndTaxes();
+                return Cart.Sum(item => item.TaxAmount);
+            }
+        }
+
         public decimal GrandTotal => NetSubtotalAfterInvoiceDiscount + TotalTax;
         public decimal TotalDiscount => LineDiscount + InvoiceDiscountAmount;
 
@@ -84,6 +140,7 @@ namespace ShopPro.Core.Services
                 });
             }
 
+            RecalculateCartDiscountsAndTaxes();
             return true;
         }
 
@@ -93,12 +150,14 @@ namespace ShopPro.Core.Services
             if (item != null && overridePrice >= 0)
             {
                 item.PriceOverride = overridePrice;
+                RecalculateCartDiscountsAndTaxes();
             }
         }
 
         public void RemoveItem(int productId)
         {
             Cart.RemoveAll(i => i.Product.Id == productId);
+            RecalculateCartDiscountsAndTaxes();
         }
 
         public void UpdateQuantity(int productId, int newQuantity)
@@ -110,6 +169,8 @@ namespace ShopPro.Core.Services
                 Cart.Remove(item);
             else
                 item.Quantity = newQuantity;
+
+            RecalculateCartDiscountsAndTaxes();
         }
 
         public void ClearCart()
@@ -123,7 +184,7 @@ namespace ShopPro.Core.Services
         /// <summary>
         /// Single Payment Checkout Helper
         /// </summary>
-        public async Task<Sale?> ProcessCheckoutAsync(int userId, PaymentMethod method, decimal amountPaid, int? customerId = null)
+        public async Task<Sale?> ProcessCheckoutAsync(int userId, PaymentMethod method, decimal amountPaid, int? customerId = null, bool isCreditSale = false)
         {
             var payments = new List<Payment>
             {
@@ -136,34 +197,50 @@ namespace ShopPro.Core.Services
                 }
             };
 
-            return await ProcessSplitCheckoutAsync(userId, payments, customerId);
+            return await ProcessSplitCheckoutAsync(userId, payments, customerId, isCreditSale);
         }
 
         /// <summary>
         /// Split Payment & Multi-Method Checkout Validation:
         /// - Verifies total paid against invoice GrandTotal.
-        /// - Rejects underpaid non-credit checkouts.
-        /// - Rejects split payments that do not add up to GrandTotal.
-        /// - Updates Customer Credit Balance for remaining balances on credit sales.
+        /// - Rejects underpayments unless isCreditSale == true AND customerId.HasValue == true.
+        /// - Rejects split payments that do not add up to GrandTotal for non-cash split checkouts.
+        /// - Calculates ChangeDue for cash payments over GrandTotal.
+        /// - Updates Customer Credit Balance for remaining unpaid balances on credit sales.
         /// </summary>
-        public async Task<Sale?> ProcessSplitCheckoutAsync(int userId, List<Payment> payments, int? customerId = null)
+        public async Task<Sale?> ProcessSplitCheckoutAsync(int userId, List<Payment> payments, int? customerId = null, bool isCreditSale = false)
         {
             if (Cart.Count == 0) return null;
 
+            RecalculateCartDiscountsAndTaxes();
+            var currentGrandTotal = GrandTotal;
             var totalPaid = payments.Sum(p => p.Amount);
-            var isCreditSale = payments.Any(p => p.Method == PaymentMethod.StoreCredit);
 
-            // Validation 1: Rejects payments under GrandTotal unless it's a credit customer
-            if (totalPaid < GrandTotal && !isCreditSale && !customerId.HasValue)
+            // Validation 1: Rejects underpayment unless explicitly marked as a credit sale tied to a valid registered customer
+            if (totalPaid < currentGrandTotal)
             {
-                return null; // Underpayment rejected
+                if (!isCreditSale || !customerId.HasValue)
+                {
+                    return null; // Underpayment rejected
+                }
             }
 
             // Validation 2: For non-cash split payments (Card + UPI), total must match GrandTotal within 0.01 tolerance
             bool isMultiSplitNonCash = payments.Count > 1 && payments.All(p => p.Method != PaymentMethod.Cash);
-            if (isMultiSplitNonCash && Math.Abs(totalPaid - GrandTotal) > 0.01m)
+            if (isMultiSplitNonCash && Math.Abs(totalPaid - currentGrandTotal) > 0.01m)
             {
                 return null; // Split payment total mismatch
+            }
+
+            // Calculate ChangeDue for cash payments
+            decimal changeDue = 0.00m;
+            if (totalPaid > currentGrandTotal)
+            {
+                var cashPayment = payments.FirstOrDefault(p => p.Method == PaymentMethod.Cash);
+                if (cashPayment != null || payments.All(p => p.Method == PaymentMethod.Cash))
+                {
+                    changeDue = Math.Max(0.00m, totalPaid - currentGrandTotal);
+                }
             }
 
             var invoiceNum = $"INV-{DateTime.UtcNow:yyyyMMddHHmmss}-{Random.Shared.Next(100, 999)}";
@@ -176,7 +253,9 @@ namespace ShopPro.Core.Services
                 Subtotal = NetSubtotalAfterInvoiceDiscount,
                 TotalDiscount = TotalDiscount,
                 TotalTax = TotalTax,
-                GrandTotal = GrandTotal,
+                GrandTotal = currentGrandTotal,
+                ChangeDue = changeDue,
+                Status = SaleStatus.Completed,
                 SaleDate = DateTime.UtcNow,
                 Payments = payments
             };
@@ -188,7 +267,7 @@ namespace ShopPro.Core.Services
                     ProductId = cartItem.Product.Id,
                     Quantity = cartItem.Quantity,
                     UnitPrice = cartItem.EffectivePrice,
-                    DiscountAmount = cartItem.DiscountAmount,
+                    DiscountAmount = cartItem.DiscountAmount + cartItem.AllocatedInvoiceDiscount,
                     TaxRate = cartItem.TaxRate,
                     TaxAmount = cartItem.TaxAmount,
                     LineTotal = cartItem.LineTotal
@@ -212,13 +291,13 @@ namespace ShopPro.Core.Services
                 }
             }
 
-            // If credit sale, update Customer Credit Balance for unpaid remaining balance
-            if (customerId.HasValue && totalPaid < GrandTotal)
+            // If explicit credit sale with registered customer, update Customer Credit Balance for remaining unpaid balance
+            if (isCreditSale && customerId.HasValue && totalPaid < currentGrandTotal)
             {
                 var customer = await _db.Customers.FindAsync(customerId.Value);
                 if (customer != null)
                 {
-                    customer.CreditBalance += (GrandTotal - totalPaid);
+                    customer.CreditBalance += (currentGrandTotal - totalPaid);
                 }
             }
 
@@ -230,7 +309,7 @@ namespace ShopPro.Core.Services
         }
 
         /// <summary>
-        /// Void / Cancel completed sale and restore stock to DB
+        /// Void / Cancel completed sale: Restores stock in DB and preserves sale record with Status = Voided.
         /// </summary>
         public async Task<bool> VoidSaleAsync(int saleId, int userId, string voidReason)
         {
@@ -238,14 +317,14 @@ namespace ShopPro.Core.Services
                 .Include(s => s.Items)
                 .FirstOrDefaultAsync(s => s.Id == saleId);
 
-            if (sale == null) return false;
+            if (sale == null || sale.Status == SaleStatus.Voided) return false;
 
             foreach (var item in sale.Items)
             {
                 var product = await _db.Products.FindAsync(item.ProductId);
                 if (product != null)
                 {
-                    product.StockQuantity += item.Quantity; // Restock item
+                    product.StockQuantity += item.Quantity; // Restore stock
 
                     _db.InventoryTransactions.Add(new InventoryTransaction
                     {
@@ -259,7 +338,7 @@ namespace ShopPro.Core.Services
                 }
             }
 
-            _db.Sales.Remove(sale);
+            sale.Status = SaleStatus.Voided; // Preserve sale record for audit & tax filing
             await _db.SaveChangesAsync();
             return true;
         }
