@@ -1,6 +1,7 @@
 using ShopPro.Data;
 using ShopPro.Data.Entities;
 using ShopPro.Core.Models;
+using ShopPro.Hardware;
 using Microsoft.EntityFrameworkCore;
 
 namespace ShopPro.Core.Services
@@ -306,6 +307,63 @@ namespace ShopPro.Core.Services
 
             ClearCart();
             return sale;
+        }
+
+        /// <summary>
+        /// Decoupled Receipt Printing Hookup:
+        /// Invoked downstream AFTER sale completion. A failed receipt print will NOT cause the completed Sale in EF Core SQLite to roll back.
+        /// </summary>
+        public async Task<PrintResult> TryPrintCheckoutReceiptAsync(Sale sale, IPrinterService printerService, string printerName = "")
+        {
+            if (sale == null || printerService == null)
+                return new PrintResult { Success = false, Message = "Invalid sale or printer service." };
+
+            var receiptData = MapSaleToReceiptData(sale);
+            return await printerService.PrintReceiptWithStatusAsync(receiptData, printerName);
+        }
+
+        /// <summary>
+        /// Reprint Last Receipt Capability: Reconstructs ReceiptData from SQLite Sale entity by saleId and triggers print
+        /// </summary>
+        public async Task<PrintResult> ReprintLastReceiptAsync(int saleId, IPrinterService printerService, string printerName = "")
+        {
+            var sale = await _db.Sales
+                .Include(s => s.Items).ThenInclude(i => i.Product)
+                .Include(s => s.Payments)
+                .Include(s => s.User)
+                .FirstOrDefaultAsync(s => s.Id == saleId);
+
+            if (sale == null)
+                return new PrintResult { Success = false, Message = $"Sale ID #{saleId} not found in database." };
+
+            var receiptData = MapSaleToReceiptData(sale);
+            return await printerService.PrintReceiptWithStatusAsync(receiptData, printerName);
+        }
+
+        public ReceiptData MapSaleToReceiptData(Sale sale)
+        {
+            var totalPaid = sale.Payments.Sum(p => p.Amount);
+
+            return new ReceiptData
+            {
+                InvoiceNumber = sale.InvoiceNumber,
+                CashierName = sale.User?.FullName ?? "Cashier",
+                TransactionDate = sale.SaleDate,
+                Subtotal = sale.Subtotal,
+                Discount = sale.TotalDiscount,
+                Tax = sale.TotalTax,
+                Total = sale.GrandTotal,
+                AmountPaid = totalPaid,
+                ChangeDue = sale.ChangeDue,
+                PaymentMethod = string.Join(", ", sale.Payments.Select(p => p.Method.ToString())),
+                Items = sale.Items.Select(i => new ReceiptLineItem
+                {
+                    ItemName = i.Product?.Name ?? $"Item #{i.ProductId}",
+                    Quantity = i.Quantity,
+                    UnitPrice = i.UnitPrice,
+                    LineTotal = i.LineTotal
+                }).ToList()
+            };
         }
 
         /// <summary>

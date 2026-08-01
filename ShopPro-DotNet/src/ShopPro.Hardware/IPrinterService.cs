@@ -3,6 +3,9 @@ namespace ShopPro.Hardware
     public class ReceiptData
     {
         public string StoreName { get; set; } = "ShopPro Retail Store";
+        public string AddressLine1 { get; set; } = "123 Main Commercial Street";
+        public string AddressLine2 { get; set; } = "City Center, State - 400001";
+        public string Gstin { get; set; } = "27AAAAA0000A1Z5";
         public string InvoiceNumber { get; set; } = string.Empty;
         public string CashierName { get; set; } = string.Empty;
         public DateTime TransactionDate { get; set; } = DateTime.UtcNow;
@@ -26,8 +29,9 @@ namespace ShopPro.Hardware
 
     public interface IPrinterService
     {
+        Task<PrintResult> PrintReceiptWithStatusAsync(ReceiptData receipt, string printerName = "");
         Task<bool> PrintReceiptAsync(ReceiptData receipt);
-        Task<bool> OpenCashDrawerAsync();
+        Task<bool> OpenCashDrawerAsync(string printerNameOrPort = "");
         Task<bool> TestPrinterConnectionAsync(string printerNameOrPort);
     }
 }

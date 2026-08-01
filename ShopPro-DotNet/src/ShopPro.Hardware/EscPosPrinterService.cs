@@ -1,4 +1,6 @@
 using System.Text;
+using System.Drawing.Printing;
+using System.IO.Ports;
 
 namespace ShopPro.Hardware
 {
@@ -27,10 +29,13 @@ namespace ShopPro.Hardware
 
     /// <summary>
     /// ESC/POS Thermal Receipt Printing Engine:
-    /// - Formats receipts for 58mm (32 cols) and 80mm (48 cols) thermal paper.
-    /// - Generates standard ESC/POS byte streams.
-    /// - Gracefully handles printer missing / disconnected / timeout errors without crashing or rolling back completed sales.
-    /// - Decoupled from sale completion: Printing is a downstream action.
+    /// Constructs real binary ESC/POS control streams (Initialization, Alignment, Bold Totals, Paper Cut) and transmits them via:
+    /// 1. Win32 Raw Print Spooler (winspool.drv P/Invoke) for USB / Windows-installed Printers.
+    /// 2. System.IO.Ports.SerialPort for COM-connected thermal printers.
+    /// 
+    /// Note on Verification:
+    /// This code builds real binary ESC/POS command sequences and invokes winspool.drv / SerialPort OS APIs.
+    /// Spooler API invocation can be verified on Windows OS. Physical paper feeding, motor cutting, and RJ11 drawer kick can only be verified when attached to a physical ESC/POS thermal printer.
     /// </summary>
     public class EscPosPrinterService : IPrinterService
     {
@@ -38,41 +43,48 @@ namespace ShopPro.Hardware
 
         public async Task<PrintResult> PrintReceiptWithStatusAsync(ReceiptData receipt, string printerName = "")
         {
-            try
+            if (receipt == null)
+                return new PrintResult { Success = false, Message = "Receipt data cannot be null." };
+
+            var targetPrinter = string.IsNullOrWhiteSpace(printerName) ? "Generic / Text Only" : printerName.Trim();
+
+            // Build binary ESC/POS command byte stream (includes ESC @, ESC E bold, GS V paper cut)
+            byte[] escPosBytes = BuildEscPosByteStream(receipt, Config);
+            string formattedText = FormatEscPosText(receipt, Config);
+
+            // Preview file generated for offline development/logging
+            var previewPath = Path.Combine(Path.GetTempPath(), $"Receipt_{receipt.InvoiceNumber}.txt");
+            await File.WriteAllTextAsync(previewPath, formattedText);
+
+            // Check if printer is installed or COM port exists
+            bool exists = CheckPrinterExists(targetPrinter);
+            if (!exists)
             {
-                if (receipt == null)
-                    return new PrintResult { Success = false, Message = "Receipt data cannot be null." };
-
-                var formattedText = FormatEscPosText(receipt, Config);
-
-                // If printer name is empty or specified as "None", skip hardware print cleanly
-                if (string.IsNullOrWhiteSpace(printerName) || printerName.Equals("None", StringComparison.OrdinalIgnoreCase))
+                return new PrintResult
                 {
-                    // Write to temp file preview for offline dev/testing
-                    var tempFile = Path.Combine(Path.GetTempPath(), $"Receipt_{receipt.InvoiceNumber}.txt");
-                    await File.WriteAllTextAsync(tempFile, formattedText);
-                    return new PrintResult { Success = true, Message = "Printed to file preview (No physical printer configured).", OutputPath = tempFile };
-                }
+                    Success = false,
+                    Message = $"Printer not found — check connection and retry (Target: '{targetPrinter}'). Saved to preview file.",
+                    OutputPath = previewPath
+                };
+            }
 
-                // Simulating physical printer connection check
-                bool printerExists = CheckPrinterExists(printerName);
-                if (!printerExists)
+            // Route to COM Serial Port or Windows Print Spooler
+            if (targetPrinter.StartsWith("COM", StringComparison.OrdinalIgnoreCase))
+            {
+                return await SendToSerialPortAsync(targetPrinter, escPosBytes, previewPath);
+            }
+            else
+            {
+                return await Task.Run(() =>
                 {
+                    var result = WinSpoolPrinter.SendBytesToPrinter(targetPrinter, escPosBytes);
                     return new PrintResult
                     {
-                        Success = false,
-                        Message = $"Printer not found — check connection and retry (Target: '{printerName}')."
+                        Success = result.Success,
+                        Message = result.Message,
+                        OutputPath = previewPath
                     };
-                }
-
-                var outFile = Path.Combine(Path.GetTempPath(), $"Receipt_{receipt.InvoiceNumber}.txt");
-                await File.WriteAllTextAsync(outFile, formattedText);
-
-                return new PrintResult { Success = true, Message = "Receipt printed successfully.", OutputPath = outFile };
-            }
-            catch (Exception ex)
-            {
-                return new PrintResult { Success = false, Message = $"Printer error: {ex.Message}" };
+                });
             }
         }
 
@@ -82,28 +94,133 @@ namespace ShopPro.Hardware
             return result.Success;
         }
 
-        public async Task<bool> OpenCashDrawerAsync()
+        public async Task<bool> OpenCashDrawerAsync(string printerNameOrPort = "")
         {
             // ESC/POS Cash Drawer Pulse Command: ESC p m t1 t2 (0x1B, 0x70, 0x00, 0x19, 0xFA)
             // Pin 2 pulse: 25ms ON, 250ms OFF
             byte[] drawerPulseBytes = new byte[] { 0x1B, 0x70, 0x00, 0x19, 0xFA };
-            await Task.CompletedTask;
-            return true;
+
+            var targetPrinter = string.IsNullOrWhiteSpace(printerNameOrPort) ? "Generic / Text Only" : printerNameOrPort.Trim();
+
+            if (!CheckPrinterExists(targetPrinter))
+                return false;
+
+            if (targetPrinter.StartsWith("COM", StringComparison.OrdinalIgnoreCase))
+            {
+                var res = await SendToSerialPortAsync(targetPrinter, drawerPulseBytes, null);
+                return res.Success;
+            }
+            else
+            {
+                var res = WinSpoolPrinter.SendBytesToPrinter(targetPrinter, drawerPulseBytes);
+                return res.Success;
+            }
         }
 
         public async Task<bool> TestPrinterConnectionAsync(string printerNameOrPort)
         {
             await Task.CompletedTask;
-            if (string.IsNullOrWhiteSpace(printerNameOrPort)) return false;
             return CheckPrinterExists(printerNameOrPort);
         }
 
-        private bool CheckPrinterExists(string printerName)
+        public bool CheckPrinterExists(string printerName)
         {
             if (string.IsNullOrWhiteSpace(printerName)) return false;
-            if (printerName.Equals("Generic / Text Only", StringComparison.OrdinalIgnoreCase)) return true;
-            if (printerName.StartsWith("COM", StringComparison.OrdinalIgnoreCase)) return true;
+
+            if (printerName.StartsWith("COM", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var availablePorts = SerialPort.GetPortNames();
+                    return availablePorts.Contains(printerName.ToUpper().Trim());
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+
+            // Check installed Windows Printers via System.Drawing.Printing.PrinterSettings
+            try
+            {
+                foreach (string installedPrinter in PrinterSettings.InstalledPrinters)
+                {
+                    if (installedPrinter.Equals(printerName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+                // Fallback for non-Windows environments
+                if (printerName.Equals("Generic / Text Only", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
             return false;
+        }
+
+        public byte[] BuildEscPosByteStream(ReceiptData receipt, ReceiptHeaderConfig config)
+        {
+            var bytes = new List<byte>();
+
+            // ESC @ : Initialize Printer
+            bytes.AddRange(new byte[] { 0x1B, 0x40 });
+
+            // ESC a 1 : Center Align Header
+            bytes.AddRange(new byte[] { 0x1B, 0x61, 0x01 });
+
+            // ESC E 1 : Enable Bold
+            bytes.AddRange(new byte[] { 0x1B, 0x45, 0x01 });
+            bytes.AddRange(Encoding.ASCII.GetBytes(config.StoreName + "\n"));
+            // ESC E 0 : Disable Bold
+            bytes.AddRange(new byte[] { 0x1B, 0x45, 0x00 });
+
+            bytes.AddRange(Encoding.ASCII.GetBytes(config.AddressLine1 + "\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes(config.AddressLine2 + "\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes($"GSTIN: {config.Gstin}\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes(new string('=', (int)config.PaperWidth) + "\n"));
+
+            // ESC a 0 : Left Align Body
+            bytes.AddRange(new byte[] { 0x1B, 0x61, 0x00 });
+            bytes.AddRange(Encoding.ASCII.GetBytes($"Invoice #: {receipt.InvoiceNumber}\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes($"Date: {receipt.TransactionDate:yyyy-MM-dd HH:mm}\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes($"Cashier: {receipt.CashierName}\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes($"Payment Method: {receipt.PaymentMethod}\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes(new string('-', (int)config.PaperWidth) + "\n"));
+
+            int cols = (int)config.PaperWidth;
+            foreach (var item in receipt.Items)
+            {
+                var line = $"{item.Quantity}x {item.ItemName}";
+                if (line.Length > cols - 10) line = line.Substring(0, cols - 10);
+                var priceStr = $"₹{item.LineTotal:F2}";
+                int pad = cols - line.Length - priceStr.Length;
+                if (pad < 1) pad = 1;
+                bytes.GetBytes($"{line}{new string(' ', pad)}{priceStr}\n", 0, line.Length + pad + priceStr.Length + 1, bytes.ToArray(), 0); // Format line
+            }
+
+            bytes.AddRange(Encoding.ASCII.GetBytes(new string('-', cols) + "\n"));
+
+            // ESC E 1 : Enable Bold for Totals
+            bytes.AddRange(new byte[] { 0x1B, 0x45, 0x01 });
+            bytes.AddRange(Encoding.ASCII.GetBytes(FormatPair("GRAND TOTAL:", $"₹{receipt.Total:F2}", cols) + "\n"));
+            bytes.AddRange(new byte[] { 0x1B, 0x45, 0x00 });
+
+            bytes.AddRange(Encoding.ASCII.GetBytes(FormatPair("Amount Paid:", $"₹{receipt.AmountPaid:F2}", cols) + "\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes(FormatPair("Change Due:", $"₹{receipt.ChangeDue:F2}", cols) + "\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes(new string('=', cols) + "\n"));
+
+            // ESC a 1 : Center Align Footer
+            bytes.AddRange(new byte[] { 0x1B, 0x61, 0x01 });
+            bytes.AddRange(Encoding.ASCII.GetBytes(config.FooterMessage + "\n"));
+
+            // Feed 3 lines + GS V 66 0 : Partial Paper Cut Command
+            bytes.AddRange(Encoding.ASCII.GetBytes("\n\n\n"));
+            bytes.AddRange(new byte[] { 0x1D, 0x56, 0x42, 0x00 });
+
+            return bytes.ToArray();
         }
 
         public string FormatEscPosText(ReceiptData receipt, ReceiptHeaderConfig config)
@@ -111,51 +228,58 @@ namespace ShopPro.Hardware
             int cols = (int)config.PaperWidth;
             var sb = new StringBuilder();
 
-            // Header Center Aligned
             sb.AppendLine(CenterText(config.StoreName, cols));
             sb.AppendLine(CenterText(config.AddressLine1, cols));
             sb.AppendLine(CenterText(config.AddressLine2, cols));
             sb.AppendLine(CenterText($"GSTIN: {config.Gstin}", cols));
             sb.AppendLine(new string('=', cols));
 
-            // Invoice Header
             sb.AppendLine($"Invoice #: {receipt.InvoiceNumber}");
             sb.AppendLine($"Date: {receipt.TransactionDate:yyyy-MM-dd HH:mm}");
             sb.AppendLine($"Cashier: {receipt.CashierName}");
             sb.AppendLine($"Payment Method: {receipt.PaymentMethod}");
             sb.AppendLine(new string('-', cols));
 
-            // Line Items
             foreach (var item in receipt.Items)
             {
                 var line = $"{item.Quantity}x {item.ItemName}";
                 if (line.Length > cols - 10) line = line.Substring(0, cols - 10);
-
                 var priceStr = $"₹{item.LineTotal:F2}";
                 var padding = cols - line.Length - priceStr.Length;
                 if (padding < 1) padding = 1;
-
                 sb.AppendLine($"{line}{new string(' ', padding)}{priceStr}");
             }
 
             sb.AppendLine(new string('-', cols));
-
-            // Summary Totals
             sb.AppendLine(FormatPair("Subtotal:", $"₹{receipt.Subtotal:F2}", cols));
-            if (receipt.Discount > 0)
-                sb.AppendLine(FormatPair("Discount:", $"₹{receipt.Discount:F2}", cols));
+            if (receipt.Discount > 0) sb.AppendLine(FormatPair("Discount:", $"₹{receipt.Discount:F2}", cols));
             sb.AppendLine(FormatPair("GST Tax:", $"₹{receipt.Tax:F2}", cols));
             sb.AppendLine(FormatPair("GRAND TOTAL:", $"₹{receipt.Total:F2}", cols));
             sb.AppendLine(FormatPair("Amount Paid:", $"₹{receipt.AmountPaid:F2}", cols));
             sb.AppendLine(FormatPair("Change Due:", $"₹{receipt.ChangeDue:F2}", cols));
-
             sb.AppendLine(new string('=', cols));
 
-            // Footer
             sb.AppendLine(CenterText(config.FooterMessage, cols));
-            sb.AppendLine(CenterText("[Scan UPI QR Code to Pay]", cols));
-
             return sb.ToString();
+        }
+
+        private async Task<PrintResult> SendToSerialPortAsync(string portName, byte[] bytes, string? previewPath)
+        {
+            return await Task.Run(() =>
+            {
+                try
+                {
+                    using var port = new SerialPort(portName, 9600, Parity.None, 8, StopBits.One);
+                    port.Open();
+                    port.Write(bytes, 0, bytes.Length);
+                    port.Close();
+                    return new PrintResult { Success = true, Message = $"Data transmitted to serial printer at {portName}.", OutputPath = previewPath };
+                }
+                catch (Exception ex)
+                {
+                    return new PrintResult { Success = false, Message = $"Serial port error ({portName}): {ex.Message}", OutputPath = previewPath };
+                }
+            });
         }
 
         private string CenterText(string text, int width)
