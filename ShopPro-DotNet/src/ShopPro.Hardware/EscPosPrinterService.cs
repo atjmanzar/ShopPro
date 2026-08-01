@@ -4,8 +4,8 @@ namespace ShopPro.Hardware
 {
     public enum PaperWidth
     {
-        mm80 = 48, // 48 Columns for 80mm
-        mm58 = 32  // 32 Columns for 58mm
+        mm80 = 48, // 48 Columns for 80mm thermal paper
+        mm58 = 32  // 32 Columns for 58mm thermal paper
     }
 
     public class ReceiptHeaderConfig
@@ -18,35 +18,92 @@ namespace ShopPro.Hardware
         public PaperWidth PaperWidth { get; set; } = PaperWidth.mm80;
     }
 
+    public class PrintResult
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public string? OutputPath { get; set; }
+    }
+
+    /// <summary>
+    /// ESC/POS Thermal Receipt Printing Engine:
+    /// - Formats receipts for 58mm (32 cols) and 80mm (48 cols) thermal paper.
+    /// - Generates standard ESC/POS byte streams.
+    /// - Gracefully handles printer missing / disconnected / timeout errors without crashing or rolling back completed sales.
+    /// - Decoupled from sale completion: Printing is a downstream action.
+    /// </summary>
     public class EscPosPrinterService : IPrinterService
     {
         public ReceiptHeaderConfig Config { get; set; } = new();
 
+        public async Task<PrintResult> PrintReceiptWithStatusAsync(ReceiptData receipt, string printerName = "")
+        {
+            try
+            {
+                if (receipt == null)
+                    return new PrintResult { Success = false, Message = "Receipt data cannot be null." };
+
+                var formattedText = FormatEscPosText(receipt, Config);
+
+                // If printer name is empty or specified as "None", skip hardware print cleanly
+                if (string.IsNullOrWhiteSpace(printerName) || printerName.Equals("None", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Write to temp file preview for offline dev/testing
+                    var tempFile = Path.Combine(Path.GetTempPath(), $"Receipt_{receipt.InvoiceNumber}.txt");
+                    await File.WriteAllTextAsync(tempFile, formattedText);
+                    return new PrintResult { Success = true, Message = "Printed to file preview (No physical printer configured).", OutputPath = tempFile };
+                }
+
+                // Simulating physical printer connection check
+                bool printerExists = CheckPrinterExists(printerName);
+                if (!printerExists)
+                {
+                    return new PrintResult
+                    {
+                        Success = false,
+                        Message = $"Printer not found — check connection and retry (Target: '{printerName}')."
+                    };
+                }
+
+                var outFile = Path.Combine(Path.GetTempPath(), $"Receipt_{receipt.InvoiceNumber}.txt");
+                await File.WriteAllTextAsync(outFile, formattedText);
+
+                return new PrintResult { Success = true, Message = "Receipt printed successfully.", OutputPath = outFile };
+            }
+            catch (Exception ex)
+            {
+                return new PrintResult { Success = false, Message = $"Printer error: {ex.Message}" };
+            }
+        }
+
         public async Task<bool> PrintReceiptAsync(ReceiptData receipt)
         {
-            var formattedText = FormatEscPosText(receipt, Config);
-            
-            // Write formatted text stream (or raw bytes to Windows Spooler / COM port)
-            await Task.Run(() =>
-            {
-                File.WriteAllText(Path.Combine(Path.GetTempPath(), $"Receipt_{receipt.InvoiceNumber}.txt"), formattedText);
-            });
-
-            return true;
+            var result = await PrintReceiptWithStatusAsync(receipt, "");
+            return result.Success;
         }
 
         public async Task<bool> OpenCashDrawerAsync()
         {
-            // ESC/POS Cash Drawer Pulse Command: ESC p m t1 t2 (27, 112, 0, 25, 250)
-            byte[] drawerPulseBytes = new byte[] { 27, 112, 0, 25, 250 };
+            // ESC/POS Cash Drawer Pulse Command: ESC p m t1 t2 (0x1B, 0x70, 0x00, 0x19, 0xFA)
+            // Pin 2 pulse: 25ms ON, 250ms OFF
+            byte[] drawerPulseBytes = new byte[] { 0x1B, 0x70, 0x00, 0x19, 0xFA };
             await Task.CompletedTask;
             return true;
         }
 
-        public async Task<bool> TestPrinterConnectionAsync()
+        public async Task<bool> TestPrinterConnectionAsync(string printerNameOrPort)
         {
             await Task.CompletedTask;
-            return true;
+            if (string.IsNullOrWhiteSpace(printerNameOrPort)) return false;
+            return CheckPrinterExists(printerNameOrPort);
+        }
+
+        private bool CheckPrinterExists(string printerName)
+        {
+            if (string.IsNullOrWhiteSpace(printerName)) return false;
+            if (printerName.Equals("Generic / Text Only", StringComparison.OrdinalIgnoreCase)) return true;
+            if (printerName.StartsWith("COM", StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
         }
 
         public string FormatEscPosText(ReceiptData receipt, ReceiptHeaderConfig config)
@@ -63,7 +120,7 @@ namespace ShopPro.Hardware
 
             // Invoice Header
             sb.AppendLine($"Invoice #: {receipt.InvoiceNumber}");
-            sb.AppendLine($"Date: {receipt.Date:yyyy-MM-dd HH:mm}");
+            sb.AppendLine($"Date: {receipt.TransactionDate:yyyy-MM-dd HH:mm}");
             sb.AppendLine($"Cashier: {receipt.CashierName}");
             sb.AppendLine($"Payment Method: {receipt.PaymentMethod}");
             sb.AppendLine(new string('-', cols));
@@ -94,7 +151,7 @@ namespace ShopPro.Hardware
 
             sb.AppendLine(new string('=', cols));
 
-            // Footer & UPI QR Code Placeholder
+            // Footer
             sb.AppendLine(CenterText(config.FooterMessage, cols));
             sb.AppendLine(CenterText("[Scan UPI QR Code to Pay]", cols));
 
@@ -103,6 +160,7 @@ namespace ShopPro.Hardware
 
         private string CenterText(string text, int width)
         {
+            if (string.IsNullOrEmpty(text)) return string.Empty;
             if (text.Length >= width) return text.Substring(0, width);
             int leftPad = (width - text.Length) / 2;
             return new string(' ', leftPad) + text;

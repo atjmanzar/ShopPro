@@ -6,13 +6,22 @@ namespace ShopPro.Core.Services
     public class BarcodeService
     {
         /// <summary>
-        /// Generates a Code128 or EAN13 barcode pixel matrix using ZXing.Net
+        /// Auto-detects barcode symbology (EAN-13, EAN-8, CODE-128) and generates a boolean pixel matrix.
+        /// Rejects empty or malformed barcodes with ArgumentException.
         /// </summary>
-        public bool[,] GenerateBarcodeMatrix(string content, BarcodeFormat format = BarcodeFormat.CODE_128, int width = 300, int height = 100)
+        public bool[,] GenerateBarcodeMatrix(string content, BarcodeFormat? format = null, int width = 300, int height = 100)
         {
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                throw new ArgumentException("Barcode content cannot be empty.", nameof(content));
+            }
+
+            var cleanContent = content.Trim();
+            var targetFormat = format ?? AutoDetectSymbology(cleanContent);
+
             var writer = new BarcodeWriterPixelData
             {
-                Format = format,
+                Format = targetFormat,
                 Options = new EncodingOptions
                 {
                     Width = width,
@@ -22,10 +31,10 @@ namespace ShopPro.Core.Services
                 }
             };
 
-            var pixelData = writer.Write(content);
+            var pixelData = writer.Write(cleanContent);
             var result = new bool[height, width];
 
-            // Convert raw pixel bytes to boolean matrix (black/white)
+            // Convert raw RGBA pixel bytes to boolean matrix (black/white)
             for (int y = 0; y < height; y++)
             {
                 for (int x = 0; x < width; x++)
@@ -37,6 +46,20 @@ namespace ShopPro.Core.Services
             }
 
             return result;
+        }
+
+        public BarcodeFormat AutoDetectSymbology(string content)
+        {
+            if (string.IsNullOrWhiteSpace(content)) return BarcodeFormat.CODE_128;
+
+            bool isAllDigits = content.All(char.IsDigit);
+            if (isAllDigits)
+            {
+                if (content.Length == 13) return BarcodeFormat.EAN_13;
+                if (content.Length == 8) return BarcodeFormat.EAN_8;
+            }
+
+            return BarcodeFormat.CODE_128;
         }
     }
 }
