@@ -43,7 +43,8 @@ namespace ShopPro.Hardware
                 }
 
                 var di = new DOCINFOW();
-                if (!spoolerApi.StartDocPrinter(hPrinter, 1, di))
+                uint jobId = spoolerApi.StartDocPrinter(hPrinter, 1, di);
+                if (jobId == 0)
                 {
                     int err = spoolerApi.GetLastError();
                     return (false, $"StartDocPrinter failed for '{printerName}' (Win32 Error: {err}).");
@@ -73,7 +74,7 @@ namespace ShopPro.Hardware
                     return (false, $"Partial write to spooler for '{printerName}': wrote {dwWritten} of {bytes.Length} bytes.");
                 }
 
-                return (true, $"Byte stream successfully handed to Windows Print Spooler for target '{printerName}'. Physical paper print unverified without attached hardware.");
+                return (true, $"Byte stream successfully handed to Windows Print Spooler (Job ID: {jobId}) for target '{printerName}'. Physical paper print unverified without attached hardware.");
             }
             catch (Exception ex)
             {

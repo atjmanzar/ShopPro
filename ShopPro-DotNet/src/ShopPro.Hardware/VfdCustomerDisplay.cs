@@ -8,14 +8,21 @@ namespace ShopPro.Hardware
     /// - Position Line 1: 0x1B, 0x51, 0x41 (ESC Q A)
     /// - Position Line 2: 0x1B, 0x51, 0x42 (ESC Q B)
     /// 
-    /// Note on Testability:
-    /// Unit tests verify character truncation (max 20 chars per line) and ASCII command byte formatting.
-    /// End-to-end device testing requires physical VFD hardware connected via COM/RS-232 serial port.
+    /// Note on Testability & Transport:
+    /// Generates binary ESC/POS VFD control streams and transmits them over serial port via injectable ISerialPortDevice.
+    /// Hardware Verification: Physical display requires attached VFD 2x20 pole display.
     /// </summary>
     public class VfdCustomerDisplay
     {
+        private readonly ISerialPortDevice _device;
+
         public string Line1Text { get; private set; } = string.Empty;
         public string Line2Text { get; private set; } = string.Empty;
+
+        public VfdCustomerDisplay(ISerialPortDevice? device = null)
+        {
+            _device = device ?? new NativeSerialPortDevice();
+        }
 
         public void ClearDisplay()
         {
@@ -32,13 +39,13 @@ namespace ShopPro.Hardware
         public void DisplayItemScanned(string itemName, decimal price)
         {
             Line1Text = itemName.Length > 20 ? itemName.Substring(0, 20) : itemName;
-            Line2Text = $"Price: ₹{price:F2}";
+            Line2Text = $"Price: Rs. {price:F2}";
         }
 
         public void DisplayTotal(decimal grandTotal)
         {
             Line1Text = "TOTAL DUE:";
-            Line2Text = $"₹{grandTotal:F2}";
+            Line2Text = $"Rs. {grandTotal:F2}";
         }
 
         public byte[] GenerateSerialBytes()
@@ -58,6 +65,25 @@ namespace ShopPro.Hardware
             bytes.AddRange(System.Text.Encoding.ASCII.GetBytes(line2Padded));
 
             return bytes.ToArray();
+        }
+
+        public (bool Success, string Message) SendToDisplay(string portName)
+        {
+            if (string.IsNullOrWhiteSpace(portName))
+                return (false, "Port name is empty.");
+
+            try
+            {
+                byte[] bytes = GenerateSerialBytes();
+                _device.Open(portName);
+                _device.Write(bytes, 0, bytes.Length);
+                _device.Close();
+                return (true, $"VFD bytes transmitted to port '{portName}'. Physical text display unverified without attached hardware.");
+            }
+            catch (Exception ex)
+            {
+                return (false, $"VFD serial error ({portName}): {ex.Message}");
+            }
         }
     }
 }

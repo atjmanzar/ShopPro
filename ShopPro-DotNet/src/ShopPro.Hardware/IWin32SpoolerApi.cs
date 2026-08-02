@@ -6,7 +6,7 @@ namespace ShopPro.Hardware
     {
         bool OpenPrinter(string pPrinterName, out IntPtr phPrinter, IntPtr pDefault);
         bool ClosePrinter(IntPtr hPrinter);
-        bool StartDocPrinter(IntPtr hPrinter, int level, WinSpoolPrinter.DOCINFOW di);
+        uint StartDocPrinter(IntPtr hPrinter, int level, WinSpoolPrinter.DOCINFOW di);
         bool EndDocPrinter(IntPtr hPrinter);
         bool StartPagePrinter(IntPtr hPrinter);
         bool EndPagePrinter(IntPtr hPrinter);
@@ -23,7 +23,7 @@ namespace ShopPro.Hardware
         private static extern bool ClosePrinterWin32(IntPtr hPrinter);
 
         [DllImport("winspool.drv", EntryPoint = "StartDocPrinterW", SetLastError = true, CharSet = CharSet.Unicode, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
-        private static extern bool StartDocPrinterW(IntPtr hPrinter, int level, [In, MarshalAs(UnmanagedType.LPStruct)] WinSpoolPrinter.DOCINFOW di);
+        private static extern uint StartDocPrinterW(IntPtr hPrinter, int level, [In, MarshalAs(UnmanagedType.LPStruct)] WinSpoolPrinter.DOCINFOW di);
 
         [DllImport("winspool.drv", EntryPoint = "EndDocPrinter", SetLastError = true, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
         private static extern bool EndDocPrinterWin32(IntPtr hPrinter);
@@ -47,7 +47,7 @@ namespace ShopPro.Hardware
             return ClosePrinterWin32(hPrinter);
         }
 
-        public bool StartDocPrinter(IntPtr hPrinter, int level, WinSpoolPrinter.DOCINFOW di)
+        public uint StartDocPrinter(IntPtr hPrinter, int level, WinSpoolPrinter.DOCINFOW di)
         {
             return StartDocPrinterW(hPrinter, level, di);
         }
