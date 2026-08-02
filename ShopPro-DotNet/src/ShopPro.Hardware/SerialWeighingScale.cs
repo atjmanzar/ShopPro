@@ -1,20 +1,34 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace ShopPro.Hardware
 {
+    public class ScaleReadResult
+    {
+        public bool Success { get; set; }
+        public decimal? WeightKg { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public bool IsStable { get; set; }
+    }
+
     /// <summary>
     /// Serial Weighing Scale Integration:
     /// Protocol Spec: NCI / Toledo / Avery Berkel RS-232 ASCII Protocol (Baud: 9600, Data Bits: 8, Parity: None, Stop Bits: 1).
     /// Serial Command: 'W\r' (Poll weight command sent from POS to Scale).
     /// Response Format: ASCII string containing weight readings, e.g. "\x02ST,GS,+01.250kg\x03\r\n".
     /// 
-    /// Note on Verification:
-    /// Uses injectable ISerialPortDevice. Connect attempts to open real serial port. ReadWeightKg transmits 'W\r' poll command over serial interface, reads ASCII response stream, and parses weight via Regex.
-    /// Hardware Verification: Physical scale reading requires attached RS-232 Toledo/NCI weighing scale.
+    /// Commercial Safety:
+    /// - Parses exact Toledo/NCI packet structures using CultureInfo.InvariantCulture.
+    /// - Explicitly rejects negative weights, unstable status (US), overload (OL), and malformed packets.
+    /// - Returns ScaleReadResult distinguishes zero tare weight (0.000 kg) from hardware read errors (null).
     /// </summary>
     public class SerialWeighingScale : IDisposable
     {
-        private ISerialPortDevice _device;
+        private static readonly Regex ToledoRegex = new Regex(
+            @"^\x02?(?:(?<status>ST|US|OL|EA),)?(?:GS|NT)?,?(?<sign>[+-])?(?<weight>[0-9]+\.[0-9]+)(?<unit>kg|lb)?",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private readonly ISerialPortDevice _device;
 
         public bool IsConnected => _device != null && _device.IsOpen;
         public string ComPort { get; private set; } = "COM1";
@@ -27,44 +41,112 @@ namespace ShopPro.Hardware
 
         public (bool Success, string Message) Connect(string portName = "COM1", int baudRate = 9600)
         {
-            ComPort = portName;
+            if (string.IsNullOrWhiteSpace(portName))
+                return (false, "Port name cannot be empty.");
+
+            var targetPort = portName.Trim();
+
+            // Reconnection Guard: If already connected to a different port, close existing connection first
+            if (_device.IsOpen)
+            {
+                Disconnect();
+            }
+
+            ComPort = targetPort;
             LastError = string.Empty;
 
             try
             {
-                if (!_device.IsOpen)
-                {
-                    _device.Open(portName, baudRate);
-                }
-                return (true, $"Connected to weighing scale at port '{portName}'.");
+                _device.Open(targetPort, baudRate);
+                return (true, $"Connected to weighing scale at port '{targetPort}'.");
             }
             catch (Exception ex)
             {
-                LastError = $"Failed to open serial port '{portName}': {ex.Message}";
+                LastError = $"Failed to open serial port '{targetPort}': {ex.Message}";
                 return (false, LastError);
             }
         }
 
-        public decimal ParseWeightPacket(string rawAsciiPacket)
+        public ScaleReadResult ParseWeightPacket(string rawAsciiPacket)
         {
-            if (string.IsNullOrWhiteSpace(rawAsciiPacket)) return 0.000m;
-
-            // Regex matches numbers with decimals in weight string (e.g. "+01.250kg" -> 1.250)
-            var match = Regex.Match(rawAsciiPacket, @"([0-9]+\.[0-9]+)");
-            if (match.Success && decimal.TryParse(match.Value, out var weight))
+            if (string.IsNullOrWhiteSpace(rawAsciiPacket))
             {
-                return weight;
+                return new ScaleReadResult
+                {
+                    Success = false,
+                    WeightKg = null,
+                    Message = "Empty ASCII packet received from scale.",
+                    IsStable = false
+                };
             }
 
-            return 0.000m;
+            var match = ToledoRegex.Match(rawAsciiPacket.Trim());
+            if (!match.Success)
+            {
+                return new ScaleReadResult
+                {
+                    Success = false,
+                    WeightKg = null,
+                    Message = $"Malformed scale packet format: '{rawAsciiPacket.Trim()}'.",
+                    IsStable = false
+                };
+            }
+
+            string status = match.Groups["status"].Value.ToUpperInvariant();
+            string sign = match.Groups["sign"].Value;
+            string weightStr = match.Groups["weight"].Value;
+            string unit = match.Groups["unit"].Value.ToLowerInvariant();
+
+            // Reject Overload or Error status
+            if (status == "OL")
+            {
+                return new ScaleReadResult { Success = false, WeightKg = null, Message = "Scale status: Overload (OL).", IsStable = false };
+            }
+            if (status == "EA")
+            {
+                return new ScaleReadResult { Success = false, WeightKg = null, Message = "Scale status: Error (EA).", IsStable = false };
+            }
+
+            // Reject Unstable status
+            bool isStable = string.IsNullOrEmpty(status) || status == "ST";
+            if (status == "US")
+            {
+                return new ScaleReadResult { Success = false, WeightKg = null, Message = "Scale reading is unstable (US). Wait for motion to stop.", IsStable = false };
+            }
+
+            // Explicitly reject negative signs (e.g. -01.250kg)
+            if (sign == "-")
+            {
+                return new ScaleReadResult { Success = false, WeightKg = null, Message = "Negative weight reading rejected for checkout.", IsStable = isStable };
+            }
+
+            // Parse numeric weight using InvariantCulture
+            if (!decimal.TryParse(weightStr, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var parsedWeight))
+            {
+                return new ScaleReadResult { Success = false, WeightKg = null, Message = $"Invalid numeric value in packet: '{weightStr}'.", IsStable = isStable };
+            }
+
+            // Convert pounds to kg if unit is lb
+            if (unit == "lb")
+            {
+                parsedWeight = Math.Round(parsedWeight * 0.45359237m, 3, MidpointRounding.AwayFromZero);
+            }
+
+            return new ScaleReadResult
+            {
+                Success = true,
+                WeightKg = parsedWeight,
+                Message = $"Valid {(isStable ? "stable" : "unstable")} scale reading: {parsedWeight:F3} kg.",
+                IsStable = isStable
+            };
         }
 
-        public decimal ReadWeightKg()
+        public ScaleReadResult ReadWeightKg()
         {
             if (!IsConnected)
             {
                 LastError = "Scale is not connected.";
-                return 0.000m;
+                return new ScaleReadResult { Success = false, WeightKg = null, Message = LastError, IsStable = false };
             }
 
             try
@@ -79,23 +161,27 @@ namespace ShopPro.Hardware
                     rawPacket = _device.ReadExisting();
                 }
 
-                if (string.IsNullOrWhiteSpace(rawPacket))
+                var result = ParseWeightPacket(rawPacket);
+                if (result.Success)
                 {
-                    LastError = "Empty response from scale.";
-                    return 0.000m;
+                    LastError = string.Empty; // Clear error on success
+                }
+                else
+                {
+                    LastError = result.Message; // Maintain error state
                 }
 
-                return ParseWeightPacket(rawPacket);
+                return result;
             }
             catch (TimeoutException)
             {
                 LastError = "Serial scale read timed out.";
-                return 0.000m;
+                return new ScaleReadResult { Success = false, WeightKg = null, Message = LastError, IsStable = false };
             }
             catch (Exception ex)
             {
                 LastError = $"Scale read error: {ex.Message}";
-                return 0.000m;
+                return new ScaleReadResult { Success = false, WeightKg = null, Message = LastError, IsStable = false };
             }
         }
 

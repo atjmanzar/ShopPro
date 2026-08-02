@@ -10,7 +10,7 @@ namespace ShopPro.Hardware
     /// 
     /// Note on Testability & Transport:
     /// Generates binary ESC/POS VFD control streams and transmits them over serial port via injectable ISerialPortDevice.
-    /// Hardware Verification: Physical display requires attached VFD 2x20 pole display.
+    /// Uses try/finally blocks to guarantee serial port closure on success or exception.
     /// </summary>
     public class VfdCustomerDisplay
     {
@@ -72,17 +72,33 @@ namespace ShopPro.Hardware
             if (string.IsNullOrWhiteSpace(portName))
                 return (false, "Port name is empty.");
 
+            bool opened = false;
             try
             {
                 byte[] bytes = GenerateSerialBytes();
                 _device.Open(portName);
+                opened = true;
+
                 _device.Write(bytes, 0, bytes.Length);
-                _device.Close();
                 return (true, $"VFD bytes transmitted to port '{portName}'. Physical text display unverified without attached hardware.");
             }
             catch (Exception ex)
             {
                 return (false, $"VFD serial error ({portName}): {ex.Message}");
+            }
+            finally
+            {
+                if (opened || _device.IsOpen)
+                {
+                    try
+                    {
+                        _device.Close();
+                    }
+                    catch
+                    {
+                        // Clean resource release
+                    }
+                }
             }
         }
     }

@@ -78,6 +78,7 @@ namespace ShopPro.Hardware
         public string LastPortName { get; private set; } = string.Empty;
         public string LastWrittenText { get; private set; } = string.Empty;
         public byte[]? LastWrittenBytes { get; private set; }
+        public int CloseCount { get; private set; } = 0;
 
         public bool IsOpen { get; private set; } = false;
 
@@ -95,19 +96,20 @@ namespace ShopPro.Hardware
         public void Close()
         {
             IsOpen = false;
+            CloseCount++;
         }
 
         public void Write(string text)
         {
             if (!IsOpen) throw new InvalidOperationException("Port is closed.");
-            if (!SimulateWriteSuccess) throw new InvalidOperationException("Write error.");
+            if (!SimulateWriteSuccess) throw new InvalidOperationException("Serial write operation failed.");
             LastWrittenText = text;
         }
 
         public void Write(byte[] buffer, int offset, int count)
         {
             if (!IsOpen) throw new InvalidOperationException("Port is closed.");
-            if (!SimulateWriteSuccess) throw new InvalidOperationException("Write error.");
+            if (!SimulateWriteSuccess) throw new InvalidOperationException("Serial write operation failed.");
             LastWrittenBytes = new byte[count];
             Array.Copy(buffer, offset, LastWrittenBytes, 0, count);
         }

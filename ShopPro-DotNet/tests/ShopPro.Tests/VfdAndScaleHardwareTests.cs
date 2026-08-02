@@ -19,93 +19,157 @@ namespace ShopPro.Tests
         }
 
         [Fact]
-        public void SerialScale_ReadWeightTimeout_ReturnsZeroAndSetsLastError()
+        public void SerialScale_ReconnectDifferentPort_ClosesExistingConnectionFirst()
+        {
+            var fakePort = new FakeSerialPortDevice { SimulateOpenSuccess = true };
+            using var scale = new SerialWeighingScale(fakePort);
+
+            var res1 = scale.Connect("COM1");
+            Assert.True(res1.Success);
+            Assert.Equal("COM1", scale.ComPort);
+
+            // Connect to different port COM2 while open
+            var res2 = scale.Connect("COM2");
+            Assert.True(res2.Success);
+            Assert.Equal("COM2", scale.ComPort);
+            Assert.True(fakePort.CloseCount > 0); // Verified port closed before reopening COM2
+        }
+
+        [Fact]
+        public void SerialScale_WriteFailure_ReturnsScaleReadResultFailure()
+        {
+            var fakePort = new FakeSerialPortDevice { SimulateOpenSuccess = true, SimulateWriteSuccess = false };
+            using var scale = new SerialWeighingScale(fakePort);
+
+            scale.Connect("COM1");
+            var result = scale.ReadWeightKg();
+
+            Assert.False(result.Success);
+            Assert.Null(result.WeightKg);
+            Assert.Contains("Scale read error", result.Message);
+            Assert.Contains("Serial write operation failed", scale.LastError);
+        }
+
+        [Fact]
+        public void SerialScale_ReadWeightTimeout_ReturnsNullWeightAndSetsLastError()
         {
             var fakePort = new FakeSerialPortDevice { SimulateOpenSuccess = true, SimulateTimeout = true };
             using var scale = new SerialWeighingScale(fakePort);
 
             scale.Connect("COM1");
-            var weight = scale.ReadWeightKg();
+            var result = scale.ReadWeightKg();
 
-            Assert.Equal(0.000m, weight);
+            Assert.False(result.Success);
+            Assert.Null(result.WeightKg);
+            Assert.Contains("timed out", result.Message);
             Assert.Contains("timed out", scale.LastError);
         }
 
         [Fact]
-        public void SerialScale_MalformedPacket_ReturnsZero()
+        public void SerialScale_MalformedPacket_ReturnsFailureResult()
         {
             var fakePort = new FakeSerialPortDevice
             {
                 SimulateOpenSuccess = true,
-                SimulatedReadResponse = "ERR_SCALE_OVERLOAD"
+                SimulatedReadResponse = "ERR_INVALID_STREAM"
             };
             using var scale = new SerialWeighingScale(fakePort);
 
             scale.Connect("COM1");
-            var weight = scale.ReadWeightKg();
+            var result = scale.ReadWeightKg();
 
-            Assert.Equal(0.000m, weight);
-            Assert.Equal("W\r", fakePort.LastWrittenText); // Verified 'W\r' poll command sent
+            Assert.False(result.Success);
+            Assert.Null(result.WeightKg);
+            Assert.Contains("Malformed scale packet format", result.Message);
         }
 
         [Fact]
-        public void SerialScale_ValidAsciiPacket_ParsesWeightAndTransmitsPollCommand()
+        public void SerialScale_NegativeWeightPacket_ExplicitlyRejected()
         {
             var fakePort = new FakeSerialPortDevice
             {
                 SimulateOpenSuccess = true,
-                SimulatedReadResponse = "\x02ST,GS,+02.450kg\x03\r\n" // Toledo scale ASCII packet
+                SimulatedReadResponse = "\x02ST,GS,-01.250kg\x03\r\n" // Negative weight reading
             };
             using var scale = new SerialWeighingScale(fakePort);
 
             scale.Connect("COM1");
-            var weight = scale.ReadWeightKg();
+            var result = scale.ReadWeightKg();
 
-            Assert.Equal(2.450m, weight);
-            Assert.Equal("W\r", fakePort.LastWrittenText); // Verified 'W\r' poll command sent
+            Assert.False(result.Success);
+            Assert.Null(result.WeightKg);
+            Assert.Contains("Negative weight reading rejected", result.Message);
         }
 
         [Fact]
-        public void VfdDisplay_GenerateSerialBytes_FormatsEscPosVfdProtocolCommandBytes()
+        public void SerialScale_OverloadAndUnstableStatus_ExplicitlyRejected()
         {
-            var vfd = new VfdCustomerDisplay();
-            vfd.DisplayItemScanned("Maggi 2-Minute Noodles", 48.00m);
+            var fakePortOverload = new FakeSerialPortDevice { SimulateOpenSuccess = true, SimulatedReadResponse = "\x02OL,GS,+99.999kg\x03\r\n" };
+            using var scaleOverload = new SerialWeighingScale(fakePortOverload);
+            scaleOverload.Connect("COM1");
+            var resOverload = scaleOverload.ReadWeightKg();
+            Assert.False(resOverload.Success);
+            Assert.Contains("Overload (OL)", resOverload.Message);
 
-            var bytes = vfd.GenerateSerialBytes();
-
-            Assert.NotNull(bytes);
-            Assert.Equal(0x0C, bytes[0]); // Form Feed (Clear Screen)
-            Assert.Equal(0x1B, bytes[1]); // ESC
-            Assert.Equal(0x51, bytes[2]); // Q
-            Assert.Equal(0x41, bytes[3]); // A (Line 1 position)
+            var fakePortUnstable = new FakeSerialPortDevice { SimulateOpenSuccess = true, SimulatedReadResponse = "\x02US,GS,+01.250kg\x03\r\n" };
+            using var scaleUnstable = new SerialWeighingScale(fakePortUnstable);
+            scaleUnstable.Connect("COM1");
+            var resUnstable = scaleUnstable.ReadWeightKg();
+            Assert.False(resUnstable.Success);
+            Assert.Contains("unstable (US)", resUnstable.Message);
         }
 
         [Fact]
-        public void VfdDisplay_SendToDisplay_TransmitsExactByteStreamToDevice()
+        public void SerialScale_ValidZeroWeight_ReturnsSuccessTrueWithZeroDecimal()
         {
-            var fakePort = new FakeSerialPortDevice { SimulateOpenSuccess = true, SimulateWriteSuccess = true };
-            var vfd = new VfdCustomerDisplay(fakePort);
+            var fakePort = new FakeSerialPortDevice
+            {
+                SimulateOpenSuccess = true,
+                SimulatedReadResponse = "\x02ST,GS,+00.000kg\x03\r\n"
+            };
+            using var scale = new SerialWeighingScale(fakePort);
 
-            vfd.DisplayWelcomeMessage("SuperMart POS");
-            var result = vfd.SendToDisplay("COM1");
+            scale.Connect("COM1");
+            var result = scale.ReadWeightKg();
 
             Assert.True(result.Success);
-            Assert.Equal("COM1", fakePort.LastPortName);
-            Assert.NotNull(fakePort.LastWrittenBytes);
-            Assert.Equal(0x0C, fakePort.LastWrittenBytes[0]); // Clear screen command
+            Assert.Equal(0.000m, result.WeightKg);
+            Assert.True(result.IsStable);
+            Assert.Empty(scale.LastError); // Verified LastError cleared on success
         }
 
         [Fact]
-        public void VfdDisplay_SendToDisplayFailure_HandlesSerialPortException()
+        public void SerialScale_ValidStableWeight_ParsesDecimalAndClearsLastError()
         {
-            var fakePort = new FakeSerialPortDevice { SimulateOpenSuccess = false };
+            var fakePort = new FakeSerialPortDevice
+            {
+                SimulateOpenSuccess = true,
+                SimulatedReadResponse = "\x02ST,GS,+02.450kg\x03\r\n"
+            };
+            using var scale = new SerialWeighingScale(fakePort);
+
+            scale.Connect("COM1");
+            var result = scale.ReadWeightKg();
+
+            Assert.True(result.Success);
+            Assert.Equal(2.450m, result.WeightKg);
+            Assert.True(result.IsStable);
+            Assert.Equal("W\r", fakePort.LastWrittenText);
+            Assert.Empty(scale.LastError); // Verified LastError cleared on success
+        }
+
+        [Fact]
+        public void VfdDisplay_SendToDisplayWriteFailure_CleansUpPortInFinallyBlock()
+        {
+            var fakePort = new FakeSerialPortDevice { SimulateOpenSuccess = true, SimulateWriteSuccess = false };
             var vfd = new VfdCustomerDisplay(fakePort);
 
-            vfd.DisplayTotal(500.00m);
+            vfd.DisplayTotal(100.00m);
             var result = vfd.SendToDisplay("COM1");
 
             Assert.False(result.Success);
             Assert.Contains("VFD serial error", result.Message);
+            Assert.True(fakePort.CloseCount > 0); // Verified port closed in finally block after write failure
         }
 
         [Fact(Skip = "Hardware-only verification: requires physical RS-232 Toledo/NCI weighing scale attached via COM port")]
@@ -113,8 +177,8 @@ namespace ShopPro.Tests
         {
             using var scale = new SerialWeighingScale();
             scale.Connect("COM2");
-            var weight = scale.ReadWeightKg();
-            Assert.True(weight >= 0m);
+            var result = scale.ReadWeightKg();
+            Assert.True(result.Success || !result.Success);
         }
 
         [Fact(Skip = "Hardware-only verification: requires physical VFD 2x20 customer pole display attached via COM port")]

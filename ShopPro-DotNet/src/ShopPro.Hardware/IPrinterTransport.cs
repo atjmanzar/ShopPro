@@ -1,6 +1,5 @@
 using System.Text.RegularExpressions;
 using System.Drawing.Printing;
-using System.IO.Ports;
 
 namespace ShopPro.Hardware
 {
@@ -43,10 +42,12 @@ namespace ShopPro.Hardware
         private static readonly Regex ComPortRegex = new Regex(@"^COM[1-9][0-9]?$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private readonly IWin32SpoolerApi _spoolerApi;
+        private readonly ISerialPortDevice? _serialDevice;
 
-        public WindowsSpoolerAndSerialTransport(IWin32SpoolerApi? spoolerApi = null)
+        public WindowsSpoolerAndSerialTransport(IWin32SpoolerApi? spoolerApi = null, ISerialPortDevice? serialDevice = null)
         {
             _spoolerApi = spoolerApi ?? new NativeWin32SpoolerApi();
+            _serialDevice = serialDevice;
         }
 
         public (bool Success, string Message) SendBytes(string printerNameOrPort, byte[] bytes)
@@ -57,17 +58,29 @@ namespace ShopPro.Hardware
             var target = printerNameOrPort.Trim();
             if (IsComPort(target))
             {
+                bool opened = false;
+                ISerialPortDevice port = _serialDevice ?? new NativeSerialPortDevice();
                 try
                 {
-                    using var port = new SerialPort(target.ToUpper(), 9600, Parity.None, 8, StopBits.One);
-                    port.Open();
+                    port.Open(target.ToUpper());
+                    opened = true;
                     port.Write(bytes, 0, bytes.Length);
-                    port.Close();
                     return (true, $"Data transmitted to serial printer at {target}. Physical paper print unverified without attached hardware.");
                 }
                 catch (Exception ex)
                 {
                     return (false, $"Serial port error ({target}): {ex.Message}");
+                }
+                finally
+                {
+                    if (opened || port.IsOpen)
+                    {
+                        try { port.Close(); } catch { }
+                    }
+                    if (_serialDevice == null)
+                    {
+                        port.Dispose();
+                    }
                 }
             }
             else
@@ -83,9 +96,14 @@ namespace ShopPro.Hardware
             var target = printerNameOrPort.Trim();
             if (IsComPort(target))
             {
+                if (_serialDevice != null)
+                {
+                    return true;
+                }
+
                 try
                 {
-                    return SerialPort.GetPortNames().Select(p => p.ToUpper()).Contains(target.ToUpper());
+                    return System.IO.Ports.SerialPort.GetPortNames().Select(p => p.ToUpper()).Contains(target.ToUpper());
                 }
                 catch
                 {
