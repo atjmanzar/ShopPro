@@ -1,6 +1,4 @@
 using System.Text;
-using System.Drawing.Printing;
-using System.IO.Ports;
 
 namespace ShopPro.Hardware
 {
@@ -25,72 +23,6 @@ namespace ShopPro.Hardware
         public bool Success { get; set; }
         public string Message { get; set; } = string.Empty;
         public string? OutputPath { get; set; }
-    }
-
-    public class WindowsSpoolerAndSerialTransport : IPrinterTransport
-    {
-        public (bool Success, string Message) SendBytes(string printerNameOrPort, byte[] bytes)
-        {
-            if (string.IsNullOrWhiteSpace(printerNameOrPort))
-                return (false, "Printer name or port is empty.");
-
-            var target = printerNameOrPort.Trim();
-            if (target.StartsWith("COM", StringComparison.OrdinalIgnoreCase))
-            {
-                try
-                {
-                    using var port = new SerialPort(target, 9600, Parity.None, 8, StopBits.One);
-                    port.Open();
-                    port.Write(bytes, 0, bytes.Length);
-                    port.Close();
-                    return (true, $"Data transmitted to serial printer at {target}. Physical paper print unverified without attached hardware.");
-                }
-                catch (Exception ex)
-                {
-                    return (false, $"Serial port error ({target}): {ex.Message}");
-                }
-            }
-            else
-            {
-                return WinSpoolPrinter.SendBytesToPrinter(target, bytes);
-            }
-        }
-
-        public bool CheckAvailability(string printerNameOrPort)
-        {
-            if (string.IsNullOrWhiteSpace(printerNameOrPort)) return false;
-
-            var target = printerNameOrPort.Trim();
-            if (target.StartsWith("COM", StringComparison.OrdinalIgnoreCase))
-            {
-                try
-                {
-                    return SerialPort.GetPortNames().Contains(target.ToUpper());
-                }
-                catch
-                {
-                    return false;
-                }
-            }
-
-            try
-            {
-                foreach (string installedPrinter in PrinterSettings.InstalledPrinters)
-                {
-                    if (installedPrinter.Equals(target, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return true;
-                    }
-                }
-            }
-            catch
-            {
-                if (target.Equals("Generic / Text Only", StringComparison.OrdinalIgnoreCase))
-                    return true;
-            }
-
-            return false;
-        }
     }
 
     /// <summary>
@@ -123,17 +55,28 @@ namespace ShopPro.Hardware
             byte[] escPosBytes = BuildEscPosByteStream(receipt, Config);
             string formattedText = FormatEscPosText(receipt, Config);
 
-            // Preview file generated for offline development/logging
-            var previewPath = Path.Combine(Path.GetTempPath(), $"Receipt_{receipt.InvoiceNumber}.txt");
-            await File.WriteAllTextAsync(previewPath, formattedText);
+            // Preview file creation with error handling and invoice number filename sanitization
+            string? previewPath = null;
+            try
+            {
+                string safeInvoice = string.Concat(receipt.InvoiceNumber.Split(Path.GetInvalidFileNameChars()));
+                if (string.IsNullOrWhiteSpace(safeInvoice)) safeInvoice = "Receipt";
+                previewPath = Path.Combine(Path.GetTempPath(), $"Receipt_{safeInvoice}.txt");
+                await File.WriteAllTextAsync(previewPath, formattedText);
+            }
+            catch (Exception ex)
+            {
+                // Non-fatal preview file creation warning
+                previewPath = null;
+            }
 
-            // If no printer name specified, generate preview receipt cleanly without calling spooler
+            // If no printer name specified, preview is saved but return Success = false with explicit explanation
             if (string.IsNullOrWhiteSpace(targetPrinter))
             {
                 return new PrintResult
                 {
-                    Success = true,
-                    Message = $"Preview receipt generated at path: '{previewPath}' (Preview mode / No physical printer selected).",
+                    Success = false,
+                    Message = $"No printer configured or selected — preview saved to file: '{previewPath}' (Preview mode).",
                     OutputPath = previewPath
                 };
             }
