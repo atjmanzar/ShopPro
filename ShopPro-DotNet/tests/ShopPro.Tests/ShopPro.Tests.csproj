@@ -19,6 +19,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\ShopPro.Data\ShopPro.Data.csproj" />
     <ProjectReference Include="..\..\src\ShopPro.Core\ShopPro.Core.csproj" />
+    <ProjectReference Include="..\..\src\ShopPro.Hardware\ShopPro.Hardware.csproj" />
   </ItemGroup>
 
 </Project>

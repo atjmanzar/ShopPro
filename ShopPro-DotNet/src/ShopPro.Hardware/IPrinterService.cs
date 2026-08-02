@@ -12,13 +12,13 @@ namespace ShopPro.Hardware
         public List<ReceiptLineItem> Items { get; set; } = new();
         public decimal Subtotal { get; set; }
         public decimal Discount { get; set; }
-        
+
         // Stage 3 GST Tax Model Breakdown
         public decimal CgstAmount { get; set; }
         public decimal SgstAmount { get; set; }
         public decimal IgstAmount { get; set; }
         public decimal Tax => CgstAmount + SgstAmount + IgstAmount;
-        
+
         public decimal Total { get; set; }
         public decimal AmountPaid { get; set; }
         public decimal ChangeDue { get; set; }
@@ -36,9 +36,20 @@ namespace ShopPro.Hardware
 
     public interface IPrinterService
     {
-        Task<PrintResult> PrintReceiptWithStatusAsync(ReceiptData receipt, string printerName = "");
-        Task<bool> PrintReceiptAsync(ReceiptData receipt);
-        Task<bool> OpenCashDrawerAsync(string printerNameOrPort = "");
+        /// <summary>
+        /// Print a receipt to the specified printer.
+        /// printerName must be a non-empty, validated target (spooler name or COM port).
+        /// Empty/null printerName returns Success=false (preview-only).
+        /// </summary>
+        Task<PrintResult> PrintReceiptWithStatusAsync(ReceiptData receipt, string printerName);
+
+        /// <summary>
+        /// Convenience wrapper — requires a non-empty printer name.
+        /// Returns true only when transport accepted the bytes.
+        /// </summary>
+        Task<bool> PrintReceiptAsync(ReceiptData receipt, string printerName);
+
+        Task<bool> OpenCashDrawerAsync(string printerNameOrPort);
         bool CheckPrinterAvailability(string printerNameOrPort);
     }
 }

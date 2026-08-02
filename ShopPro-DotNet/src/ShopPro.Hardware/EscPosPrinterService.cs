@@ -14,7 +14,7 @@ namespace ShopPro.Hardware
         public string AddressLine1 { get; set; } = "123 Main Commercial Street";
         public string AddressLine2 { get; set; } = "City Center, State - 400001";
         public string Gstin { get; set; } = "27AAAAA0000A1Z5";
-        public string FooterMessage { get; set; } = "Thank you for shopping with ShopPro!\nVisit again soon!";
+        public string FooterMessage { get; set; } = "Thank you for shopping with ShopPro!";
         public PaperWidth PaperWidth { get; set; } = PaperWidth.mm80;
     }
 
@@ -26,15 +26,15 @@ namespace ShopPro.Hardware
     }
 
     /// <summary>
-    /// ESC/POS Thermal Receipt Printing Engine:
-    /// Constructs binary ESC/POS control streams (Initialization, Alignment, Bold Totals, Paper Cut, Cash Drawer Kick)
-    /// and transmits them using the injected IPrinterTransport (Win32 Spooler / SerialPort).
-    /// 
-    /// Commercial Integrity Rules:
-    /// - Sanitizes untrusted text input using ReceiptSanitizer (strips ESC/GS/NUL control bytes & line breaks).
-    /// - Validates non-negative financial amounts before printing.
-    /// - Prints detailed CGST / SGST / IGST tax breakdown matching Stage 3 Indian GST model.
-    /// - Currency Encoding: Uses 'Rs.' to guarantee 100% compatibility across ESC/POS code pages without ASCII '?' substitution.
+    /// ESC/POS Thermal Receipt Printing Engine.
+    ///
+    /// Constructs binary ESC/POS control streams and transmits them via IPrinterTransport.
+    /// All text fields are sanitised through ReceiptSanitizer before encoding.
+    /// Currency uses "Rs." (pure ASCII) to avoid code-page substitution.
+    /// Tax breakdown prints CGST/SGST or IGST matching Stage 3 GST model.
+    ///
+    /// Transport dispatch uses Task.Run to avoid blocking the WPF UI thread.
+    /// Spooler acceptance means bytes were handed to Windows; physical paper is unverified.
     /// </summary>
     public class EscPosPrinterService : IPrinterService
     {
@@ -47,12 +47,12 @@ namespace ShopPro.Hardware
             _transport = transport ?? new WindowsSpoolerAndSerialTransport();
         }
 
-        public async Task<PrintResult> PrintReceiptWithStatusAsync(ReceiptData receipt, string printerName = "")
+        public async Task<PrintResult> PrintReceiptWithStatusAsync(ReceiptData receipt, string printerName)
         {
             if (receipt == null)
                 return new PrintResult { Success = false, Message = "Receipt data cannot be null." };
 
-            // Financial Validation: Reject negative amounts unless explicitly marked as refund/credit
+            // Financial validation: reject negative amounts on standard sale receipts
             if (!receipt.IsRefundOrCredit && (receipt.Subtotal < 0 || receipt.Total < 0 || receipt.AmountPaid < 0))
             {
                 return new PrintResult { Success = false, Message = "Invalid negative amounts on standard sale receipt." };
@@ -60,11 +60,11 @@ namespace ShopPro.Hardware
 
             var targetPrinter = string.IsNullOrWhiteSpace(printerName) ? "" : printerName.Trim();
 
-            // Build binary ESC/POS command byte stream (includes ESC @, ESC E bold, GS V paper cut)
+            // Build binary ESC/POS byte stream and text preview
             byte[] escPosBytes = BuildEscPosByteStream(receipt, Config);
             string formattedText = FormatEscPosText(receipt, Config);
 
-            // Preview file creation with error handling and invoice number filename sanitization
+            // Save preview file (always attempted, independent of physical print)
             string? previewPath = null;
             try
             {
@@ -77,30 +77,30 @@ namespace ShopPro.Hardware
                 previewPath = null;
             }
 
-            // If no printer name specified, preview is saved but return Success = false with explicit explanation
+            // No printer configured → explicit failure with preview path
             if (string.IsNullOrWhiteSpace(targetPrinter))
             {
                 return new PrintResult
                 {
                     Success = false,
-                    Message = $"No printer configured or selected — preview saved to file: '{previewPath}' (Preview mode).",
+                    Message = $"No printer configured or selected — preview saved to file: '{previewPath}'.",
                     OutputPath = previewPath
                 };
             }
 
-            // Check if printer is installed or COM port exists
+            // Check printer availability
             bool available = _transport.CheckAvailability(targetPrinter);
             if (!available)
             {
                 return new PrintResult
                 {
                     Success = false,
-                    Message = $"Printer not found — check connection and retry (Target: '{targetPrinter}'). Preview saved.",
+                    Message = $"Printer '{targetPrinter}' not found — check connection and retry. Preview saved.",
                     OutputPath = previewPath
                 };
             }
 
-            // Execute non-blocking spooler/serial write off UI thread
+            // Dispatch blocking spooler/serial I/O off WPF UI thread
             return await Task.Run(() =>
             {
                 var result = _transport.SendBytes(targetPrinter, escPosBytes);
@@ -113,16 +113,19 @@ namespace ShopPro.Hardware
             });
         }
 
-        public async Task<bool> PrintReceiptAsync(ReceiptData receipt)
+        /// <summary>
+        /// Convenience wrapper. Requires a non-empty, validated printer target.
+        /// Returns true only when transport accepted bytes.
+        /// </summary>
+        public async Task<bool> PrintReceiptAsync(ReceiptData receipt, string printerName)
         {
-            var result = await PrintReceiptWithStatusAsync(receipt, "");
+            var result = await PrintReceiptWithStatusAsync(receipt, printerName);
             return result.Success;
         }
 
-        public async Task<bool> OpenCashDrawerAsync(string printerNameOrPort = "")
+        public async Task<bool> OpenCashDrawerAsync(string printerNameOrPort)
         {
-            // ESC/POS Cash Drawer Pulse Command: ESC p m t1 t2 (0x1B, 0x70, 0x00, 0x19, 0xFA)
-            // Pin 2 pulse: 25ms ON, 250ms OFF
+            // ESC p m t1 t2: Pin 2 RJ11 pulse, 25ms ON / 250ms OFF
             byte[] drawerPulseBytes = new byte[] { 0x1B, 0x70, 0x00, 0x19, 0xFA };
 
             var target = string.IsNullOrWhiteSpace(printerNameOrPort) ? "" : printerNameOrPort.Trim();
@@ -171,7 +174,7 @@ namespace ShopPro.Hardware
             bytes.AddRange(Encoding.ASCII.GetBytes($"Invoice #: {ReceiptSanitizer.SanitizeLineText(receipt.InvoiceNumber, cols)}\n"));
             bytes.AddRange(Encoding.ASCII.GetBytes($"Date: {receipt.TransactionDate:yyyy-MM-dd HH:mm}\n"));
             bytes.AddRange(Encoding.ASCII.GetBytes($"Cashier: {ReceiptSanitizer.SanitizeLineText(receipt.CashierName, cols)}\n"));
-            bytes.AddRange(Encoding.ASCII.GetBytes($"Payment Method: {ReceiptSanitizer.SanitizeLineText(receipt.PaymentMethod, cols)}\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes($"Payment: {ReceiptSanitizer.SanitizeLineText(receipt.PaymentMethod, cols)}\n"));
             bytes.AddRange(Encoding.ASCII.GetBytes(new string('-', cols) + "\n"));
 
             foreach (var item in receipt.Items)
@@ -186,7 +189,7 @@ namespace ShopPro.Hardware
 
             bytes.AddRange(Encoding.ASCII.GetBytes(new string('-', cols) + "\n"));
 
-            // Totals Section with Stage 3 GST Tax Model Breakdown (CGST / SGST / IGST)
+            // Totals with Stage 3 GST breakdown
             bytes.AddRange(Encoding.ASCII.GetBytes(FormatPair("Subtotal:", $"Rs. {receipt.Subtotal:F2}", cols) + "\n"));
             if (receipt.Discount > 0)
             {
@@ -199,11 +202,13 @@ namespace ShopPro.Hardware
             }
             else
             {
-                if (receipt.CgstAmount > 0) bytes.AddRange(Encoding.ASCII.GetBytes(FormatPair("CGST Tax:", $"Rs. {receipt.CgstAmount:F2}", cols) + "\n"));
-                if (receipt.SgstAmount > 0) bytes.AddRange(Encoding.ASCII.GetBytes(FormatPair("SGST Tax:", $"Rs. {receipt.SgstAmount:F2}", cols) + "\n"));
+                if (receipt.CgstAmount > 0)
+                    bytes.AddRange(Encoding.ASCII.GetBytes(FormatPair("CGST Tax:", $"Rs. {receipt.CgstAmount:F2}", cols) + "\n"));
+                if (receipt.SgstAmount > 0)
+                    bytes.AddRange(Encoding.ASCII.GetBytes(FormatPair("SGST Tax:", $"Rs. {receipt.SgstAmount:F2}", cols) + "\n"));
             }
 
-            // ESC E 1 : Enable Bold for Grand Total
+            // ESC E 1 : Bold grand total
             bytes.AddRange(new byte[] { 0x1B, 0x45, 0x01 });
             bytes.AddRange(Encoding.ASCII.GetBytes(FormatPair("GRAND TOTAL:", $"Rs. {receipt.Total:F2}", cols) + "\n"));
             bytes.AddRange(new byte[] { 0x1B, 0x45, 0x00 });
@@ -212,11 +217,11 @@ namespace ShopPro.Hardware
             bytes.AddRange(Encoding.ASCII.GetBytes(FormatPair("Change Due:", $"Rs. {receipt.ChangeDue:F2}", cols) + "\n"));
             bytes.AddRange(Encoding.ASCII.GetBytes(new string('=', cols) + "\n"));
 
-            // ESC a 1 : Center Align Footer
+            // ESC a 1 : Center footer
             bytes.AddRange(new byte[] { 0x1B, 0x61, 0x01 });
             bytes.AddRange(Encoding.ASCII.GetBytes(ReceiptSanitizer.SanitizeLineText(config.FooterMessage, cols) + "\n"));
 
-            // Feed 3 lines + GS V 66 0 : Partial Paper Cut Command
+            // Feed 3 lines + GS V 66 0 : Partial Paper Cut
             bytes.AddRange(Encoding.ASCII.GetBytes("\n\n\n"));
             bytes.AddRange(new byte[] { 0x1D, 0x56, 0x42, 0x00 });
 
@@ -237,7 +242,7 @@ namespace ShopPro.Hardware
             sb.AppendLine($"Invoice #: {ReceiptSanitizer.SanitizeLineText(receipt.InvoiceNumber, cols)}");
             sb.AppendLine($"Date: {receipt.TransactionDate:yyyy-MM-dd HH:mm}");
             sb.AppendLine($"Cashier: {ReceiptSanitizer.SanitizeLineText(receipt.CashierName, cols)}");
-            sb.AppendLine($"Payment Method: {ReceiptSanitizer.SanitizeLineText(receipt.PaymentMethod, cols)}");
+            sb.AppendLine($"Payment: {ReceiptSanitizer.SanitizeLineText(receipt.PaymentMethod, cols)}");
             sb.AppendLine(new string('-', cols));
 
             foreach (var item in receipt.Items)

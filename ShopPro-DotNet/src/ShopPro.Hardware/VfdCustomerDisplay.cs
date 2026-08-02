@@ -1,16 +1,18 @@
 namespace ShopPro.Hardware
 {
     /// <summary>
-    /// VFD Customer Display Integration:
-    /// Protocol Spec: Standard ESC/POS VFD Command Set (Epson / Futaba / Posiflex 2x20 Character Display).
-    /// Serial Protocol Commands:
-    /// - Clear Display: 0x0C (Form Feed)
-    /// - Position Line 1: 0x1B, 0x51, 0x41 (ESC Q A)
-    /// - Position Line 2: 0x1B, 0x51, 0x42 (ESC Q B)
-    /// 
-    /// Note on Testability & Transport:
-    /// Generates binary ESC/POS VFD control streams and transmits them over serial port via injectable ISerialPortDevice.
-    /// Uses try/finally blocks to guarantee serial port closure on success or exception.
+    /// VFD Customer Pole Display Integration.
+    /// Protocol: Standard ESC/POS VFD command set (Epson / Futaba / Posiflex 2x20 character display).
+    ///   Clear Display: 0x0C (Form Feed)
+    ///   Position Line 1: 0x1B, 0x51, 0x41 (ESC Q A)
+    ///   Position Line 2: 0x1B, 0x51, 0x42 (ESC Q B)
+    ///
+    /// Text is sanitised to printable ASCII (0x20-0x7E) and restricted to 20 characters per line.
+    /// Serial resources are always closed/disposed in finally, including partial-open failures.
+    /// Uses the same injectable ISerialPortDevice as printer and scale paths.
+    ///
+    /// VFD success means bytes were written to an opened serial device;
+    /// it does not mean the customer saw the text.
     /// </summary>
     public class VfdCustomerDisplay
     {
@@ -32,20 +34,40 @@ namespace ShopPro.Hardware
 
         public void DisplayWelcomeMessage(string storeName)
         {
-            Line1Text = "WELCOME TO";
-            Line2Text = storeName.Length > 20 ? storeName.Substring(0, 20) : storeName;
+            Line1Text = SanitizeVfdText("WELCOME TO");
+            Line2Text = SanitizeVfdText(storeName);
         }
 
         public void DisplayItemScanned(string itemName, decimal price)
         {
-            Line1Text = itemName.Length > 20 ? itemName.Substring(0, 20) : itemName;
-            Line2Text = $"Price: Rs. {price:F2}";
+            Line1Text = SanitizeVfdText(itemName);
+            Line2Text = SanitizeVfdText($"Price: Rs. {price:F2}");
         }
 
         public void DisplayTotal(decimal grandTotal)
         {
-            Line1Text = "TOTAL DUE:";
-            Line2Text = $"Rs. {grandTotal:F2}";
+            Line1Text = SanitizeVfdText("TOTAL DUE:");
+            Line2Text = SanitizeVfdText($"Rs. {grandTotal:F2}");
+        }
+
+        /// <summary>
+        /// Sanitise text for VFD: strip control characters, restrict to printable ASCII (0x20-0x7E),
+        /// and truncate/pad to exactly 20 characters.
+        /// </summary>
+        public static string SanitizeVfdText(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return new string(' ', 20);
+
+            var sb = new System.Text.StringBuilder(20);
+            foreach (char c in text)
+            {
+                if (c >= 0x20 && c <= 0x7E)
+                {
+                    sb.Append(c);
+                    if (sb.Length >= 20) break;
+                }
+            }
+            return sb.ToString().PadRight(20).Substring(0, 20);
         }
 
         public byte[] GenerateSerialBytes()
@@ -54,15 +76,13 @@ namespace ShopPro.Hardware
             // 0x0C = Clear Screen
             bytes.Add(0x0C);
 
-            // Line 1: ESC Q A + Line1Text padded to 20 chars
+            // Line 1: ESC Q A + 20 chars
             bytes.AddRange(new byte[] { 0x1B, 0x51, 0x41 });
-            var line1Padded = Line1Text.PadRight(20).Substring(0, 20);
-            bytes.AddRange(System.Text.Encoding.ASCII.GetBytes(line1Padded));
+            bytes.AddRange(System.Text.Encoding.ASCII.GetBytes(SanitizeVfdText(Line1Text)));
 
-            // Line 2: ESC Q B + Line2Text padded to 20 chars
+            // Line 2: ESC Q B + 20 chars
             bytes.AddRange(new byte[] { 0x1B, 0x51, 0x42 });
-            var line2Padded = Line2Text.PadRight(20).Substring(0, 20);
-            bytes.AddRange(System.Text.Encoding.ASCII.GetBytes(line2Padded));
+            bytes.AddRange(System.Text.Encoding.ASCII.GetBytes(SanitizeVfdText(Line2Text)));
 
             return bytes.ToArray();
         }
@@ -70,7 +90,7 @@ namespace ShopPro.Hardware
         public (bool Success, string Message) SendToDisplay(string portName)
         {
             if (string.IsNullOrWhiteSpace(portName))
-                return (false, "Port name is empty.");
+                return (false, "VFD port name is empty.");
 
             bool opened = false;
             try
@@ -80,7 +100,7 @@ namespace ShopPro.Hardware
                 opened = true;
 
                 _device.Write(bytes, 0, bytes.Length);
-                return (true, $"VFD bytes transmitted to port '{portName}'. Physical text display unverified without attached hardware.");
+                return (true, $"VFD bytes transmitted to port '{portName}'. Customer text display unverified without attached hardware.");
             }
             catch (Exception ex)
             {
@@ -90,14 +110,7 @@ namespace ShopPro.Hardware
             {
                 if (opened || _device.IsOpen)
                 {
-                    try
-                    {
-                        _device.Close();
-                    }
-                    catch
-                    {
-                        // Clean resource release
-                    }
+                    try { _device.Close(); } catch { }
                 }
             }
         }

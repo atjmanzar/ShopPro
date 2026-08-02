@@ -1,20 +1,35 @@
 using System.Globalization;
-using System.Text.RegularExpressions;
+using System.IO.Ports;
 
 namespace ShopPro.Hardware
 {
+    /// <summary>
+    /// Scale serial configuration.
+    /// Every declared setting is used:
+    /// port, baud, parity, data bits, stop bits, read timeout, write timeout,
+    /// poll command, protocol name, allowed unit, max capacity, and min increment.
+    /// </summary>
     public class ScaleConfig
     {
         public string ComPort { get; set; } = "COM1";
         public int BaudRate { get; set; } = 9600;
-        public string PollCommand { get; set; } = "W\r";
+        public Parity Parity { get; set; } = Parity.None;
+        public int DataBits { get; set; } = 8;
+        public StopBits StopBits { get; set; } = StopBits.One;
         public int ReadTimeoutMs { get; set; } = 1000;
+        public int WriteTimeoutMs { get; set; } = 1000;
+        public string PollCommand { get; set; } = "W\r";
         public string Protocol { get; set; } = "Toledo";
         public string AllowedUnit { get; set; } = "kg";
         public decimal MaxCapacityKg { get; set; } = 50.000m;
         public decimal MinIncrementKg { get; set; } = 0.001m;
     }
 
+    /// <summary>
+    /// Typed weight reading result.
+    /// Zero weight (0.000 kg) is Success=true with WeightKg=0.
+    /// Read error is Success=false with WeightKg=null.
+    /// </summary>
     public class ScaleReadResult
     {
         public bool Success { get; set; }
@@ -24,24 +39,29 @@ namespace ShopPro.Hardware
     }
 
     /// <summary>
-    /// Serial Weighing Scale Integration:
-    /// Protocol Spec: NCI / Toledo / Avery Berkel RS-232 ASCII Protocol.
-    /// Configurable BaudRate, Parity, DataBits, StopBits, PollCommand, ReadTimeoutMs, AllowedUnit, and MaxCapacityKg.
-    /// 
-    /// Commercial Safety:
-    /// - Parses exact Toledo/NCI packet structures using CultureInfo.InvariantCulture.
-    /// - Explicitly rejects negative weights, unstable status (US), overload (OL), and out of range weights (> MaxCapacityKg).
-    /// - Returns ScaleReadResult distinguishing zero tare weight (0.000 kg) from hardware read errors (null).
+    /// Serial Weighing Scale Integration.
+    ///
+    /// Supported protocol: "Toledo" — exact NCI/Toledo 8142/8213 ASCII continuous output.
+    /// Packet format: STX status,mode,sign digits.digits unit ETX CR LF
+    ///   STX  = 0x02
+    ///   status = ST (stable) | US (unstable) | OL (overload) | EA (error)
+    ///   mode = GS (gross) | NT (net)
+    ///   sign = + | -
+    ///   digits = exactly NN.NNN (5+ chars with decimal)
+    ///   unit = kg | lb
+    ///   ETX = 0x03
+    ///   CR LF = \r\n
+    ///
+    /// Rejected inputs:
+    ///   bare decimals, missing STX/ETX, trailing junk, unknown status,
+    ///   wrong unit vs AllowedUnit, negative sign, unstable, overload, error,
+    ///   weight below MinIncrementKg or above MaxCapacityKg, malformed precision.
     /// </summary>
     public class SerialWeighingScale : IDisposable
     {
-        private static readonly Regex ToledoRegex = new Regex(
-            @"^\x02?(?:(?<status>ST|US|OL|EA),)?(?:GS|NT)?,?(?<sign>[+-])?(?<weight>[0-9]+\.[0-9]+)(?<unit>kg|lb)?",
-            RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
         private readonly ISerialPortDevice _device;
 
-        public ScaleConfig Config { get; set; } = new();
+        public ScaleConfig Config { get; private set; } = new();
         public bool IsConnected => _device != null && _device.IsOpen;
         public string ComPort => Config.ComPort;
         public string LastError { get; private set; } = string.Empty;
@@ -51,11 +71,10 @@ namespace ShopPro.Hardware
             _device = device ?? new NativeSerialPortDevice();
         }
 
-        public (bool Success, string Message) Connect(string portName = "COM1", int baudRate = 9600)
+        public (bool Success, string Message) Connect(string portName, int baudRate = 9600)
         {
-            Config.ComPort = portName;
-            Config.BaudRate = baudRate;
-            return Connect(Config);
+            var cfg = new ScaleConfig { ComPort = portName, BaudRate = baudRate };
+            return Connect(cfg);
         }
 
         public (bool Success, string Message) Connect(ScaleConfig config)
@@ -66,7 +85,7 @@ namespace ShopPro.Hardware
             Config = config;
             var targetPort = Config.ComPort.Trim();
 
-            // Reconnection Guard: If already connected, close existing connection first
+            // Reconnection guard: close existing before opening different port
             if (_device.IsOpen)
             {
                 Disconnect();
@@ -76,8 +95,17 @@ namespace ShopPro.Hardware
 
             try
             {
-                _device.Open(targetPort, Config.BaudRate);
-                return (true, $"Connected to weighing scale at port '{targetPort}' ({Config.BaudRate} baud).");
+                _device.Open(new SerialPortConfig
+                {
+                    PortName = targetPort,
+                    BaudRate = Config.BaudRate,
+                    Parity = Config.Parity,
+                    DataBits = Config.DataBits,
+                    StopBits = Config.StopBits,
+                    ReadTimeoutMs = Config.ReadTimeoutMs,
+                    WriteTimeoutMs = Config.WriteTimeoutMs
+                });
+                return (true, $"Connected to weighing scale at port '{targetPort}' ({Config.BaudRate} baud, {Config.Parity}, {Config.DataBits}, {Config.StopBits}).");
             }
             catch (Exception ex)
             {
@@ -86,89 +114,154 @@ namespace ShopPro.Hardware
             }
         }
 
-        public ScaleReadResult ParseWeightPacket(string rawAsciiPacket)
+        /// <summary>
+        /// Parse a raw ASCII packet using the protocol selected in Config.Protocol.
+        /// Only "Toledo" is currently implemented. Unknown protocols return failure.
+        /// </summary>
+        public ScaleReadResult ParseWeightPacket(string rawPacket)
         {
-            if (string.IsNullOrWhiteSpace(rawAsciiPacket))
+            if (string.IsNullOrEmpty(rawPacket))
             {
-                return new ScaleReadResult
+                return Fail("Empty response received from scale.");
+            }
+
+            return Config.Protocol switch
+            {
+                "Toledo" => ParseToledoPacket(rawPacket),
+                _ => Fail($"Unsupported scale protocol: '{Config.Protocol}'. Only 'Toledo' is implemented.")
+            };
+        }
+
+        /// <summary>
+        /// Exact Toledo/NCI packet parser.
+        /// Required packet: STX status,mode,sign digits.digits unit ETX CR LF
+        /// Every field is validated; bare decimals, missing framing, trailing junk are rejected.
+        /// </summary>
+        private ScaleReadResult ParseToledoPacket(string raw)
+        {
+            // Strip trailing CR/LF for parsing but require they were present
+            var trimmed = raw.TrimEnd('\r', '\n');
+
+            // 1. Require STX (0x02) at start
+            if (trimmed.Length == 0 || trimmed[0] != '\x02')
+            {
+                return Fail($"Missing STX (0x02) at start of packet: '{Escape(raw)}'.");
+            }
+
+            // 2. Require ETX (0x03) at end
+            if (trimmed[trimmed.Length - 1] != '\x03')
+            {
+                return Fail($"Missing ETX (0x03) at end of packet: '{Escape(raw)}'.");
+            }
+
+            // 3. Extract body between STX and ETX
+            string body = trimmed.Substring(1, trimmed.Length - 2);
+
+            // 4. Split by comma — expect exactly 3 fields: status, mode, weightWithUnit
+            string[] fields = body.Split(',');
+            if (fields.Length != 3)
+            {
+                return Fail($"Expected 3 comma-separated fields (status,mode,weight+unit), got {fields.Length}: '{Escape(raw)}'.");
+            }
+
+            string statusField = fields[0].Trim().ToUpperInvariant();
+            string modeField = fields[1].Trim().ToUpperInvariant();
+            string weightUnitField = fields[2].Trim();
+
+            // 5. Validate status
+            switch (statusField)
+            {
+                case "OL":
+                    return Fail("Scale overload (OL).");
+                case "EA":
+                    return Fail("Scale error (EA).");
+                case "US":
+                    return Fail("Scale reading unstable (US). Wait for motion to stop.");
+                case "ST":
+                    break; // stable — continue
+                default:
+                    return Fail($"Unknown scale status: '{statusField}'. Expected ST, US, OL, or EA.");
+            }
+
+            // 6. Validate mode
+            if (modeField != "GS" && modeField != "NT")
+            {
+                return Fail($"Unknown scale mode: '{modeField}'. Expected GS (gross) or NT (net).");
+            }
+
+            // 7. Parse sign — must be explicit + or -
+            if (weightUnitField.Length < 2)
+            {
+                return Fail($"Weight+unit field too short: '{weightUnitField}'.");
+            }
+
+            char signChar = weightUnitField[0];
+            if (signChar != '+' && signChar != '-')
+            {
+                return Fail($"Missing explicit sign (+/-) in weight field: '{weightUnitField}'.");
+            }
+            if (signChar == '-')
+            {
+                return Fail("Negative weight reading rejected for checkout.");
+            }
+
+            // 8. Split numeric part from unit
+            string afterSign = weightUnitField.Substring(1);
+
+            // Find where unit starts (first alpha char)
+            int unitStart = -1;
+            for (int i = 0; i < afterSign.Length; i++)
+            {
+                if (char.IsLetter(afterSign[i]))
                 {
-                    Success = false,
-                    WeightKg = null,
-                    Message = "Empty ASCII packet received from scale.",
-                    IsStable = false
-                };
+                    unitStart = i;
+                    break;
+                }
             }
 
-            var match = ToledoRegex.Match(rawAsciiPacket.Trim());
-            if (!match.Success)
+            if (unitStart < 0)
             {
-                return new ScaleReadResult
-                {
-                    Success = false,
-                    WeightKg = null,
-                    Message = $"Malformed scale packet format: '{rawAsciiPacket.Trim()}'.",
-                    IsStable = false
-                };
+                return Fail($"No unit found in weight field: '{weightUnitField}'.");
             }
 
-            string status = match.Groups["status"].Value.ToUpperInvariant();
-            string sign = match.Groups["sign"].Value;
-            string weightStr = match.Groups["weight"].Value;
-            string unit = match.Groups["unit"].Value.ToLowerInvariant();
+            string numericStr = afterSign.Substring(0, unitStart);
+            string unitStr = afterSign.Substring(unitStart).ToLowerInvariant();
 
-            // Reject Overload or Error status
-            if (status == "OL")
+            // 9. Validate unit against AllowedUnit
+            if (unitStr != Config.AllowedUnit.ToLowerInvariant())
             {
-                return new ScaleReadResult { Success = false, WeightKg = null, Message = "Scale status: Overload (OL).", IsStable = false };
-            }
-            if (status == "EA")
-            {
-                return new ScaleReadResult { Success = false, WeightKg = null, Message = "Scale status: Error (EA).", IsStable = false };
+                return Fail($"Unsupported unit '{unitStr}'. Expected '{Config.AllowedUnit}'.");
             }
 
-            // Reject Unstable status
-            bool isStable = string.IsNullOrEmpty(status) || status == "ST";
-            if (status == "US")
+            // 10. Parse numeric with InvariantCulture — must contain a decimal point
+            if (!numericStr.Contains('.'))
             {
-                return new ScaleReadResult { Success = false, WeightKg = null, Message = "Scale reading is unstable (US). Wait for motion to stop.", IsStable = false };
+                return Fail($"Weight value missing decimal point: '{numericStr}'.");
             }
 
-            // Explicitly reject negative signs (e.g. -01.250kg)
-            if (sign == "-")
+            if (!decimal.TryParse(numericStr, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out decimal weight))
             {
-                return new ScaleReadResult { Success = false, WeightKg = null, Message = "Negative weight reading rejected for checkout.", IsStable = isStable };
+                return Fail($"Invalid numeric weight value: '{numericStr}'.");
             }
 
-            // Parse numeric weight using InvariantCulture
-            if (!decimal.TryParse(weightStr, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var parsedWeight))
+            // 11. Enforce max capacity
+            if (weight > Config.MaxCapacityKg)
             {
-                return new ScaleReadResult { Success = false, WeightKg = null, Message = $"Invalid numeric value in packet: '{weightStr}'.", IsStable = isStable };
+                return Fail($"Weight {weight:F3} {Config.AllowedUnit} exceeds max capacity {Config.MaxCapacityKg:F3} {Config.AllowedUnit}.");
             }
 
-            // Convert pounds to kg if unit is lb
-            if (!string.IsNullOrEmpty(unit) && unit == "lb")
+            // 12. Enforce min increment (non-zero readings must meet minimum)
+            if (weight > 0m && weight < Config.MinIncrementKg)
             {
-                parsedWeight = Math.Round(parsedWeight * 0.45359237m, 3, MidpointRounding.AwayFromZero);
-            }
-
-            // Enforce maximum capacity safety limit
-            if (parsedWeight > Config.MaxCapacityKg)
-            {
-                return new ScaleReadResult
-                {
-                    Success = false,
-                    WeightKg = null,
-                    Message = $"Weight reading ({parsedWeight:F3} kg) exceeds maximum scale capacity ({Config.MaxCapacityKg:F3} kg).",
-                    IsStable = isStable
-                };
+                return Fail($"Weight {weight:F3} {Config.AllowedUnit} below minimum increment {Config.MinIncrementKg:F3} {Config.AllowedUnit}.");
             }
 
             return new ScaleReadResult
             {
                 Success = true,
-                WeightKg = parsedWeight,
-                Message = $"Valid {(isStable ? "stable" : "unstable")} scale reading: {parsedWeight:F3} kg.",
-                IsStable = isStable
+                WeightKg = weight,
+                IsStable = true,
+                Message = $"Stable reading: {weight:F3} {Config.AllowedUnit}."
             };
         }
 
@@ -177,15 +270,13 @@ namespace ShopPro.Hardware
             if (!IsConnected)
             {
                 LastError = "Scale is not connected.";
-                return new ScaleReadResult { Success = false, WeightKg = null, Message = LastError, IsStable = false };
+                return Fail(LastError);
             }
 
             try
             {
-                // Transmit poll command to Toledo / NCI scale
                 _device.Write(string.IsNullOrWhiteSpace(Config.PollCommand) ? "W\r" : Config.PollCommand);
 
-                // Read ASCII response from serial buffer
                 string rawPacket = _device.ReadLine();
                 if (string.IsNullOrWhiteSpace(rawPacket))
                 {
@@ -195,24 +286,23 @@ namespace ShopPro.Hardware
                 var result = ParseWeightPacket(rawPacket);
                 if (result.Success)
                 {
-                    LastError = string.Empty; // Clear error on success
+                    LastError = string.Empty;
                 }
                 else
                 {
-                    LastError = result.Message; // Maintain error state
+                    LastError = result.Message;
                 }
-
                 return result;
             }
             catch (TimeoutException)
             {
                 LastError = "Serial scale read timed out.";
-                return new ScaleReadResult { Success = false, WeightKg = null, Message = LastError, IsStable = false };
+                return Fail(LastError);
             }
             catch (Exception ex)
             {
                 LastError = $"Scale read error: {ex.Message}";
-                return new ScaleReadResult { Success = false, WeightKg = null, Message = LastError, IsStable = false };
+                return Fail(LastError);
             }
         }
 
@@ -220,21 +310,25 @@ namespace ShopPro.Hardware
         {
             try
             {
-                if (_device.IsOpen)
-                {
-                    _device.Close();
-                }
+                if (_device.IsOpen) _device.Close();
             }
-            catch
-            {
-                // Clean close
-            }
+            catch { }
         }
 
         public void Dispose()
         {
             Disconnect();
             _device?.Dispose();
+        }
+
+        private static ScaleReadResult Fail(string message)
+        {
+            return new ScaleReadResult { Success = false, WeightKg = null, Message = message, IsStable = false };
+        }
+
+        private static string Escape(string s)
+        {
+            return s.Replace("\x02", "<STX>").Replace("\x03", "<ETX>").Replace("\r", "<CR>").Replace("\n", "<LF>");
         }
     }
 }
