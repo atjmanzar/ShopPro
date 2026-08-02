@@ -32,6 +32,6 @@ namespace ShopPro.Hardware
         Task<PrintResult> PrintReceiptWithStatusAsync(ReceiptData receipt, string printerName = "");
         Task<bool> PrintReceiptAsync(ReceiptData receipt);
         Task<bool> OpenCashDrawerAsync(string printerNameOrPort = "");
-        Task<bool> TestPrinterConnectionAsync(string printerNameOrPort);
+        bool CheckPrinterAvailability(string printerNameOrPort);
     }
 }

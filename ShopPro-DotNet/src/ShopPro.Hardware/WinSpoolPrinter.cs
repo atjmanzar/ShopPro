@@ -8,7 +8,7 @@ namespace ShopPro.Hardware
     /// 
     /// Hardware Verification Note:
     /// This makes P/Invoke system calls to winspool.drv. It can be verified on Windows OS with an installed printer driver.
-    /// Physical printing requires a physical USB/Network thermal printer attached to the machine.
+    /// Spooler acceptance means bytes were handed to the Windows Print Spooler. Physical paper print remains unverified without attached hardware.
     /// </summary>
     public static class WinSpoolPrinter
     {
@@ -45,46 +45,77 @@ namespace ShopPro.Hardware
         {
             if (string.IsNullOrWhiteSpace(printerName))
                 return (false, "Printer name is empty.");
+            if (bytes == null || bytes.Length == 0)
+                return (false, "Byte payload is empty.");
 
             IntPtr hPrinter = IntPtr.Zero;
-            var di = new DOCINFOA();
-            bool success = false;
-            string errorMsg = string.Empty;
+            IntPtr pUnmanagedBytes = IntPtr.Zero;
+            bool docStarted = false;
+            bool pageStarted = false;
 
             try
             {
-                if (!OpenPrinter(printerName.Normalize(), out hPrinter, IntPtr.Zero))
+                if (!OpenPrinter(printerName.Trim(), out hPrinter, IntPtr.Zero))
                 {
                     int err = Marshal.GetLastWin32Error();
                     return (false, $"Printer '{printerName}' not found or inaccessible (Win32 Error: {err}). Check USB/network connection.");
                 }
 
-                if (StartDocPrinter(hPrinter, 1, di))
+                var di = new DOCINFOA();
+                if (!StartDocPrinter(hPrinter, 1, di))
                 {
-                    if (StartPagePrinter(hPrinter))
-                    {
-                        IntPtr pUnmanagedBytes = Marshal.AllocCoTaskMem(bytes.Length);
-                        Marshal.Copy(bytes, 0, pUnmanagedBytes, bytes.Length);
+                    int err = Marshal.GetLastWin32Error();
+                    return (false, $"StartDocPrinter failed for '{printerName}' (Win32 Error: {err}).");
+                }
+                docStarted = true;
 
-                        success = WritePrinter(hPrinter, pUnmanagedBytes, bytes.Length, out int dwWritten);
-                        Marshal.FreeCoTaskMem(pUnmanagedBytes);
+                if (!StartPagePrinter(hPrinter))
+                {
+                    int err = Marshal.GetLastWin32Error();
+                    return (false, $"StartPagePrinter failed for '{printerName}' (Win32 Error: {err}).");
+                }
+                pageStarted = true;
 
-                        EndPagePrinter(hPrinter);
-                    }
-                    EndDocPrinter(hPrinter);
+                pUnmanagedBytes = Marshal.AllocCoTaskMem(bytes.Length);
+                Marshal.Copy(bytes, 0, pUnmanagedBytes, bytes.Length);
+
+                bool writeOk = WritePrinter(hPrinter, pUnmanagedBytes, bytes.Length, out int dwWritten);
+
+                if (!writeOk)
+                {
+                    int err = Marshal.GetLastWin32Error();
+                    return (false, $"WritePrinter failed for '{printerName}' (Win32 Error: {err}).");
                 }
 
-                ClosePrinter(hPrinter);
+                if (dwWritten != bytes.Length)
+                {
+                    return (false, $"Partial write to spooler for '{printerName}': wrote {dwWritten} of {bytes.Length} bytes.");
+                }
 
-                if (success)
-                    return (true, "Raw bytes transmitted to Windows Print Spooler.");
-                else
-                    return (false, $"Failed to write bytes to printer '{printerName}'.");
+                return (true, $"Byte stream successfully handed to Windows Print Spooler for target '{printerName}'. Physical paper print unverified without attached hardware.");
             }
             catch (Exception ex)
             {
-                if (hPrinter != IntPtr.Zero) ClosePrinter(hPrinter);
-                return (false, $"Spooler exception: {ex.Message}");
+                return (false, $"Spooler exception for '{printerName}': {ex.Message}");
+            }
+            finally
+            {
+                if (pUnmanagedBytes != IntPtr.Zero)
+                {
+                    Marshal.FreeCoTaskMem(pUnmanagedBytes);
+                }
+                if (pageStarted && hPrinter != IntPtr.Zero)
+                {
+                    EndPagePrinter(hPrinter);
+                }
+                if (docStarted && hPrinter != IntPtr.Zero)
+                {
+                    EndDocPrinter(hPrinter);
+                }
+                if (hPrinter != IntPtr.Zero)
+                {
+                    ClosePrinter(hPrinter);
+                }
             }
         }
     }
