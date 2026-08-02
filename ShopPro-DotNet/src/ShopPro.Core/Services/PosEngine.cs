@@ -145,6 +145,23 @@ namespace ShopPro.Core.Services
             return true;
         }
 
+        public (bool Valid, string Message) ValidateScaleWeight(decimal weightKg, decimal minIncrement = 0.001m, decimal maxPlausible = 50.000m)
+        {
+            if (weightKg <= 0.000m)
+            {
+                return (false, "Weight reading must be greater than 0 kg.");
+            }
+            if (weightKg < minIncrement)
+            {
+                return (false, $"Weight reading ({weightKg:F3} kg) is below minimum allowable increment ({minIncrement:F3} kg).");
+            }
+            if (weightKg > maxPlausible)
+            {
+                return (false, $"Weight reading ({weightKg:F3} kg) exceeds maximum plausible limit ({maxPlausible:F3} kg). Check scale platform.");
+            }
+            return (true, "Valid scale weight.");
+        }
+
         public void SetPriceOverride(int productId, decimal overridePrice)
         {
             var item = Cart.FirstOrDefault(i => i.Product.Id == productId);
@@ -303,6 +320,17 @@ namespace ShopPro.Core.Services
             }
 
             _db.Sales.Add(sale);
+
+            // Audit log completed checkout sale
+            _db.AuditLogs.Add(new AuditLog
+            {
+                Action = "CHECKOUT_COMPLETED",
+                TargetEntity = "Sale",
+                Details = $"Sale completed successfully. Invoice #{invoiceNum}, Grand Total: Rs. {currentGrandTotal:F2}",
+                UserId = userId,
+                Timestamp = DateTime.UtcNow
+            });
+
             await _db.SaveChangesAsync();
 
             ClearCart();
@@ -312,6 +340,7 @@ namespace ShopPro.Core.Services
         /// <summary>
         /// Decoupled Receipt Printing Hookup:
         /// Invoked downstream AFTER sale completion. A failed receipt print will NOT cause the completed Sale in EF Core SQLite to roll back.
+        /// Records an AuditLog entry in database for hardware print attempt.
         /// </summary>
         public async Task<PrintResult> TryPrintCheckoutReceiptAsync(Sale sale, IPrinterService printerService, string printerName = "")
         {
@@ -319,11 +348,25 @@ namespace ShopPro.Core.Services
                 return new PrintResult { Success = false, Message = "Invalid sale or printer service." };
 
             var receiptData = MapSaleToReceiptData(sale);
-            return await printerService.PrintReceiptWithStatusAsync(receiptData, printerName);
+            var result = await printerService.PrintReceiptWithStatusAsync(receiptData, printerName);
+
+            // Audit log print attempt
+            _db.AuditLogs.Add(new AuditLog
+            {
+                Action = "PRINT_RECEIPT_ATTEMPT",
+                TargetEntity = "Sale",
+                Details = $"Print attempt for Invoice #{sale.InvoiceNumber} to printer '{printerName}': Success={result.Success}, Message='{result.Message}'",
+                UserId = sale.UserId,
+                Timestamp = DateTime.UtcNow
+            });
+            await _db.SaveChangesAsync();
+
+            return result;
         }
 
         /// <summary>
-        /// Reprint Last Receipt Capability: Reconstructs ReceiptData from SQLite Sale entity by saleId and triggers print
+        /// Reprint Last Receipt Capability: Reconstructs ReceiptData from SQLite Sale entity by saleId and triggers print.
+        /// Records an AuditLog entry in database for audit compliance.
         /// </summary>
         public async Task<PrintResult> ReprintLastReceiptAsync(int saleId, IPrinterService printerService, string printerName = "")
         {
@@ -337,12 +380,40 @@ namespace ShopPro.Core.Services
                 return new PrintResult { Success = false, Message = $"Sale ID #{saleId} not found in database." };
 
             var receiptData = MapSaleToReceiptData(sale);
-            return await printerService.PrintReceiptWithStatusAsync(receiptData, printerName);
+            var result = await printerService.PrintReceiptWithStatusAsync(receiptData, printerName);
+
+            // Audit log reprint event
+            _db.AuditLogs.Add(new AuditLog
+            {
+                Action = "REPRINT_RECEIPT",
+                TargetEntity = "Sale",
+                Details = $"Reprint requested for Invoice #{sale.InvoiceNumber} (Sale ID #{saleId}) to printer '{printerName}': Success={result.Success}",
+                UserId = sale.UserId,
+                Timestamp = DateTime.UtcNow
+            });
+            await _db.SaveChangesAsync();
+
+            return result;
         }
 
         public ReceiptData MapSaleToReceiptData(Sale sale)
         {
             var totalPaid = sale.Payments.Sum(p => p.Amount);
+
+            // Map CGST / SGST / IGST tax breakdown matching Stage 3 GST Model
+            decimal cgst = 0.0m;
+            decimal sgst = 0.0m;
+            decimal igst = 0.0m;
+
+            if (IsInterStateTax)
+            {
+                igst = sale.TotalTax;
+            }
+            else
+            {
+                cgst = Math.Round(sale.TotalTax / 2.0m, 2, MidpointRounding.AwayFromZero);
+                sgst = sale.TotalTax - cgst;
+            }
 
             return new ReceiptData
             {
@@ -351,7 +422,9 @@ namespace ShopPro.Core.Services
                 TransactionDate = sale.SaleDate,
                 Subtotal = sale.Subtotal,
                 Discount = sale.TotalDiscount,
-                Tax = sale.TotalTax,
+                CgstAmount = cgst,
+                SgstAmount = sgst,
+                IgstAmount = igst,
                 Total = sale.GrandTotal,
                 AmountPaid = totalPaid,
                 ChangeDue = sale.ChangeDue,
@@ -397,6 +470,16 @@ namespace ShopPro.Core.Services
             }
 
             sale.Status = SaleStatus.Voided; // Preserve sale record for audit & tax filing
+
+            _db.AuditLogs.Add(new AuditLog
+            {
+                Action = "VOID_SALE",
+                TargetEntity = "Sale",
+                Details = $"Voided Sale Invoice #{sale.InvoiceNumber} (ID #{saleId}). Reason: {voidReason}",
+                UserId = userId,
+                Timestamp = DateTime.UtcNow
+            });
+
             await _db.SaveChangesAsync();
             return true;
         }

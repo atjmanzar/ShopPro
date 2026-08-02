@@ -9,7 +9,7 @@ namespace ShopPro.Hardware
     /// 
     /// Hardware Verification Note:
     /// Makes P/Invoke system calls to winspool.drv via IWin32SpoolerApi.
-    /// Spooler acceptance means bytes were handed to the Windows Print Spooler. Physical paper print remains unverified without attached hardware.
+    /// Spooler acceptance means bytes were handed to the Windows Print Spooler (Job ID generated). Physical paper print remains unverified without attached hardware.
     /// </summary>
     public static class WinSpoolPrinter
     {
@@ -82,21 +82,22 @@ namespace ShopPro.Hardware
             }
             finally
             {
+                // Isolated cleanup blocks to ensure a failure in one step never prevents remaining handle release
                 if (pUnmanagedBytes != IntPtr.Zero)
                 {
-                    Marshal.FreeCoTaskMem(pUnmanagedBytes);
+                    try { Marshal.FreeCoTaskMem(pUnmanagedBytes); } catch { }
                 }
                 if (pageStarted && hPrinter != IntPtr.Zero)
                 {
-                    spoolerApi.EndPagePrinter(hPrinter);
+                    try { spoolerApi.EndPagePrinter(hPrinter); } catch { }
                 }
                 if (docStarted && hPrinter != IntPtr.Zero)
                 {
-                    spoolerApi.EndDocPrinter(hPrinter);
+                    try { spoolerApi.EndDocPrinter(hPrinter); } catch { }
                 }
                 if (hPrinter != IntPtr.Zero)
                 {
-                    spoolerApi.ClosePrinter(hPrinter);
+                    try { spoolerApi.ClosePrinter(hPrinter); } catch { }
                 }
             }
         }

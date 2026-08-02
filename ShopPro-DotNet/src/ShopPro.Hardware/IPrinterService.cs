@@ -12,11 +12,18 @@ namespace ShopPro.Hardware
         public List<ReceiptLineItem> Items { get; set; } = new();
         public decimal Subtotal { get; set; }
         public decimal Discount { get; set; }
-        public decimal Tax { get; set; }
+        
+        // Stage 3 GST Tax Model Breakdown
+        public decimal CgstAmount { get; set; }
+        public decimal SgstAmount { get; set; }
+        public decimal IgstAmount { get; set; }
+        public decimal Tax => CgstAmount + SgstAmount + IgstAmount;
+        
         public decimal Total { get; set; }
         public decimal AmountPaid { get; set; }
         public decimal ChangeDue { get; set; }
         public string PaymentMethod { get; set; } = "Cash";
+        public bool IsRefundOrCredit { get; set; } = false;
     }
 
     public class ReceiptLineItem

@@ -15,7 +15,7 @@ namespace ShopPro.Tests
         public uint StartDocReturn { get; set; } = 1001; // Job ID 1001
         public bool StartPageReturn { get; set; } = true;
         public bool WritePrinterReturn { get; set; } = true;
-        public int SimulateBytesWritten { get; set; } = -1; // -1 means write full bytes
+        public int SimulateBytesWritten { get; set; } = -1;
 
         public bool OpenPrinterCalled { get; private set; }
         public bool ClosePrinterCalled { get; private set; }
@@ -102,6 +102,38 @@ namespace ShopPro.Tests
         }
 
         [Fact]
+        public void ReceiptSanitizer_StripsEscPosControlBytesAndLineBreaks()
+        {
+            string untrusted = "Super\x1bMart\x00 Store\r\nName\x1d";
+            string sanitized = ReceiptSanitizer.SanitizeLineText(untrusted, 48);
+
+            Assert.Equal("SuperMart  Store Name", sanitized);
+            Assert.DoesNotContain("\x1b", sanitized);
+            Assert.DoesNotContain("\x1d", sanitized);
+            Assert.DoesNotContain("\x00", sanitized);
+            Assert.DoesNotContain("\n", sanitized);
+        }
+
+        [Fact]
+        public async Task PrintReceiptWithStatus_NegativeAmountsNonRefund_ReturnsFailureResult()
+        {
+            var printer = new EscPosPrinterService();
+            var receipt = new ReceiptData
+            {
+                InvoiceNumber = "INV-NEG-01",
+                Subtotal = -100.00m,
+                Total = -100.00m,
+                AmountPaid = -100.00m,
+                IsRefundOrCredit = false
+            };
+
+            var result = await printer.PrintReceiptWithStatusAsync(receipt, "POS-80");
+
+            Assert.False(result.Success);
+            Assert.Contains("Invalid negative amounts", result.Message);
+        }
+
+        [Fact]
         public void BuildEscPosByteStream_GeneratesExactEscPosCommandBytes()
         {
             var printer = new EscPosPrinterService();
@@ -111,13 +143,14 @@ namespace ShopPro.Tests
                 CashierName = "Cashier 1",
                 Subtotal = 100.00m,
                 Discount = 10.00m,
-                Tax = 16.20m,
+                CgstAmount = 8.10m,
+                SgstAmount = 8.10m,
                 Total = 106.20m,
                 AmountPaid = 200.00m,
                 ChangeDue = 93.80m,
                 Items = new List<ReceiptLineItem>
                 {
-                    new ReceiptLineItem { ItemName = "Maggi 280g", Quantity = 2, LineTotal = 96.00m }
+                    new ReceiptLineItem { ItemName = "Maggi 280g\nPack", Quantity = 2, LineTotal = 96.00m }
                 }
             };
 
@@ -146,6 +179,11 @@ namespace ShopPro.Tests
             Assert.Equal(0x56, bytes[len - 3]);
             Assert.Equal(0x42, bytes[len - 2]);
             Assert.Equal(0x00, bytes[len - 1]);
+
+            // Verify Stage 3 GST Tax Breakdown in byte stream
+            var text = Encoding.ASCII.GetString(bytes);
+            Assert.Contains("CGST Tax:", text);
+            Assert.Contains("SGST Tax:", text);
         }
 
         [Fact]

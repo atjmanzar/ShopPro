@@ -14,8 +14,10 @@ namespace ShopPro.UI.Views
         private readonly ShopDbContext _db;
         private readonly PosEngine _posEngine;
         private readonly HeldSaleService _heldSaleService;
+        private readonly HardwareSettingsService _hardwareSettingsService;
         private readonly EscPosPrinterService _printerService;
         private readonly KeyboardWedgeScanner _scanner;
+        private Sale? _lastCompletedSale;
 
         public PosCheckoutView(User user)
         {
@@ -24,6 +26,7 @@ namespace ShopPro.UI.Views
             _db = new ShopDbContext("");
             _posEngine = new PosEngine(_db);
             _heldSaleService = new HeldSaleService(_db);
+            _hardwareSettingsService = new HardwareSettingsService(_db);
             _printerService = new EscPosPrinterService();
 
             _scanner = new KeyboardWedgeScanner();
@@ -136,13 +139,13 @@ namespace ShopPro.UI.Views
             DgCart.ItemsSource = null;
             DgCart.ItemsSource = _posEngine.Cart;
 
-            TxtSubtotal.Text = $"₹{_posEngine.LineSubtotal:N2}";
-            TxtTotalDiscount.Text = $"₹{_posEngine.TotalDiscount:N2}";
-            TxtTotalTax.Text = $"₹{_posEngine.TotalTax:N2}";
-            TxtGrandTotal.Text = $"₹{_posEngine.GrandTotal:N2}";
+            TxtSubtotal.Text = $"Rs. {_posEngine.LineSubtotal:N2}";
+            TxtTotalDiscount.Text = $"Rs. {_posEngine.TotalDiscount:N2}";
+            TxtTotalTax.Text = $"Rs. {_posEngine.TotalTax:N2}";
+            TxtGrandTotal.Text = $"Rs. {_posEngine.GrandTotal:N2}";
 
             var taxBreakdown = TaxEngine.CalculateTax(_posEngine.NetSubtotalAfterInvoiceDiscount, 18.00m);
-            TxtTaxBreakdown.Text = $"CGST (9%): ₹{taxBreakdown.CgstAmount:N2} | SGST (9%): ₹{taxBreakdown.SgstAmount:N2}";
+            TxtTaxBreakdown.Text = $"CGST (9%): Rs. {taxBreakdown.CgstAmount:N2} | SGST (9%): Rs. {taxBreakdown.SgstAmount:N2}";
 
             TxtAmountPaid.Text = _posEngine.GrandTotal.ToString("F2");
         }
@@ -169,37 +172,59 @@ namespace ShopPro.UI.Views
                 _ => PaymentMethod.Cash
             };
 
+            // Step 1: Execute Financial Checkout in Database
             var sale = await _posEngine.ProcessCheckoutAsync(_currentUser.Id, method, paid);
             if (sale != null)
             {
+                _lastCompletedSale = sale;
                 var change = paid - sale.GrandTotal;
 
-                // Print ESC/POS Receipt
-                var receipt = new ReceiptData
+                // Step 2: Load Configured Hardware Settings from SQLite DB
+                var hwConfig = await _hardwareSettingsService.GetHardwareConfigAsync();
+
+                // Step 3: Decoupled Receipt Print Attempt
+                var printResult = await _posEngine.TryPrintCheckoutReceiptAsync(sale, _printerService, hwConfig.ThermalPrinterName);
+
+                // Step 4: Auto-kick cash drawer if enabled in settings
+                if (hwConfig.AutoKickCashDrawer)
                 {
-                    InvoiceNumber = sale.InvoiceNumber,
-                    CashierName = _currentUser.FullName,
-                    Subtotal = sale.Subtotal,
-                    Discount = sale.TotalDiscount,
-                    Tax = sale.TotalTax,
-                    Total = sale.GrandTotal,
-                    AmountPaid = paid,
-                    ChangeDue = change,
-                    PaymentMethod = method.ToString(),
-                    Items = sale.Items.Select(i => new ReceiptLineItem
-                    {
-                        ItemName = i.Product?.Name ?? "Item",
-                        Quantity = i.Quantity,
-                        UnitPrice = i.UnitPrice,
-                        LineTotal = i.LineTotal
-                    }).ToList()
-                };
+                    await _printerService.OpenCashDrawerAsync(hwConfig.ThermalPrinterName);
+                }
 
-                await _printerService.PrintReceiptAsync(receipt);
-                await _printerService.OpenCashDrawerAsync();
+                // Step 5: Surface Cashier Notification without rolling back sale or freezing UI
+                string msg = $"Checkout Completed Successfully!\nInvoice #: {sale.InvoiceNumber}\nChange Due: Rs. {change:N2}";
+                if (!printResult.Success)
+                {
+                    msg += $"\n\nPrinter Status Warning:\n{printResult.Message}\n(Sale is recorded in database. You can reprint the receipt once the printer is ready).";
+                    MessageBox.Show(msg, "Checkout Complete (Printer Warning)", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+                else
+                {
+                    MessageBox.Show(msg, "Payment & Checkout Completed", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
 
-                MessageBox.Show($"Checkout Successful!\nInvoice #: {sale.InvoiceNumber}\nPayment Method: {method}\nChange Due: ₹{change:N2}", "Payment Completed", MessageBoxButton.OK, MessageBoxImage.Information);
                 RefreshCartUi();
+            }
+        }
+
+        private async void BtnReprintReceipt_Click(object sender, RoutedEventArgs e)
+        {
+            if (_lastCompletedSale == null)
+            {
+                MessageBox.Show("No completed sale available to reprint. Perform a checkout first.", "Reprint Warning", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var hwConfig = await _hardwareSettingsService.GetHardwareConfigAsync();
+            var result = await _posEngine.ReprintLastReceiptAsync(_lastCompletedSale.Id, _printerService, hwConfig.ThermalPrinterName);
+
+            if (result.Success)
+            {
+                MessageBox.Show($"Receipt reprinted successfully for Invoice #{_lastCompletedSale.InvoiceNumber}.", "Reprint Success", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            else
+            {
+                MessageBox.Show($"Reprint Status:\n{result.Message}", "Reprint Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
 

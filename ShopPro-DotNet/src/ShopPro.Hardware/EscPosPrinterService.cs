@@ -30,8 +30,11 @@ namespace ShopPro.Hardware
     /// Constructs binary ESC/POS control streams (Initialization, Alignment, Bold Totals, Paper Cut, Cash Drawer Kick)
     /// and transmits them using the injected IPrinterTransport (Win32 Spooler / SerialPort).
     /// 
-    /// Currency Encoding:
-    /// Uses 'Rs.' to guarantee 100% compatibility across ESC/POS code pages without ASCII '?' substitution.
+    /// Commercial Integrity Rules:
+    /// - Sanitizes untrusted text input using ReceiptSanitizer (strips ESC/GS/NUL control bytes & line breaks).
+    /// - Validates non-negative financial amounts before printing.
+    /// - Prints detailed CGST / SGST / IGST tax breakdown matching Stage 3 Indian GST model.
+    /// - Currency Encoding: Uses 'Rs.' to guarantee 100% compatibility across ESC/POS code pages without ASCII '?' substitution.
     /// </summary>
     public class EscPosPrinterService : IPrinterService
     {
@@ -49,6 +52,12 @@ namespace ShopPro.Hardware
             if (receipt == null)
                 return new PrintResult { Success = false, Message = "Receipt data cannot be null." };
 
+            // Financial Validation: Reject negative amounts unless explicitly marked as refund/credit
+            if (!receipt.IsRefundOrCredit && (receipt.Subtotal < 0 || receipt.Total < 0 || receipt.AmountPaid < 0))
+            {
+                return new PrintResult { Success = false, Message = "Invalid negative amounts on standard sale receipt." };
+            }
+
             var targetPrinter = string.IsNullOrWhiteSpace(printerName) ? "" : printerName.Trim();
 
             // Build binary ESC/POS command byte stream (includes ESC @, ESC E bold, GS V paper cut)
@@ -59,14 +68,12 @@ namespace ShopPro.Hardware
             string? previewPath = null;
             try
             {
-                string safeInvoice = string.Concat(receipt.InvoiceNumber.Split(Path.GetInvalidFileNameChars()));
-                if (string.IsNullOrWhiteSpace(safeInvoice)) safeInvoice = "Receipt";
+                string safeInvoice = ReceiptSanitizer.SanitizeFilename(receipt.InvoiceNumber);
                 previewPath = Path.Combine(Path.GetTempPath(), $"Receipt_{safeInvoice}.txt");
                 await File.WriteAllTextAsync(previewPath, formattedText);
             }
-            catch (Exception ex)
+            catch
             {
-                // Non-fatal preview file creation warning
                 previewPath = null;
             }
 
@@ -93,13 +100,17 @@ namespace ShopPro.Hardware
                 };
             }
 
-            var result = _transport.SendBytes(targetPrinter, escPosBytes);
-            return new PrintResult
+            // Execute non-blocking spooler/serial write off UI thread
+            return await Task.Run(() =>
             {
-                Success = result.Success,
-                Message = result.Message,
-                OutputPath = previewPath
-            };
+                var result = _transport.SendBytes(targetPrinter, escPosBytes);
+                return new PrintResult
+                {
+                    Success = result.Success,
+                    Message = result.Message,
+                    OutputPath = previewPath
+                };
+            });
         }
 
         public async Task<bool> PrintReceiptAsync(ReceiptData receipt)
@@ -120,8 +131,11 @@ namespace ShopPro.Hardware
                 return false;
             }
 
-            var result = _transport.SendBytes(target, drawerPulseBytes);
-            return result.Success;
+            return await Task.Run(() =>
+            {
+                var result = _transport.SendBytes(target, drawerPulseBytes);
+                return result.Success;
+            });
         }
 
         public bool CheckPrinterAvailability(string printerNameOrPort)
@@ -132,6 +146,7 @@ namespace ShopPro.Hardware
 
         public byte[] BuildEscPosByteStream(ReceiptData receipt, ReceiptHeaderConfig config)
         {
+            int cols = (int)config.PaperWidth;
             var bytes = new List<byte>();
 
             // ESC @ : Initialize Printer
@@ -142,28 +157,27 @@ namespace ShopPro.Hardware
 
             // ESC E 1 : Enable Bold
             bytes.AddRange(new byte[] { 0x1B, 0x45, 0x01 });
-            bytes.AddRange(Encoding.ASCII.GetBytes(config.StoreName + "\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes(ReceiptSanitizer.SanitizeLineText(config.StoreName, cols) + "\n"));
             // ESC E 0 : Disable Bold
             bytes.AddRange(new byte[] { 0x1B, 0x45, 0x00 });
 
-            bytes.AddRange(Encoding.ASCII.GetBytes(config.AddressLine1 + "\n"));
-            bytes.AddRange(Encoding.ASCII.GetBytes(config.AddressLine2 + "\n"));
-            bytes.AddRange(Encoding.ASCII.GetBytes($"GSTIN: {config.Gstin}\n"));
-            bytes.AddRange(Encoding.ASCII.GetBytes(new string('=', (int)config.PaperWidth) + "\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes(ReceiptSanitizer.SanitizeLineText(config.AddressLine1, cols) + "\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes(ReceiptSanitizer.SanitizeLineText(config.AddressLine2, cols) + "\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes($"GSTIN: {ReceiptSanitizer.SanitizeLineText(config.Gstin, cols)}\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes(new string('=', cols) + "\n"));
 
             // ESC a 0 : Left Align Body
             bytes.AddRange(new byte[] { 0x1B, 0x61, 0x00 });
-            bytes.AddRange(Encoding.ASCII.GetBytes($"Invoice #: {receipt.InvoiceNumber}\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes($"Invoice #: {ReceiptSanitizer.SanitizeLineText(receipt.InvoiceNumber, cols)}\n"));
             bytes.AddRange(Encoding.ASCII.GetBytes($"Date: {receipt.TransactionDate:yyyy-MM-dd HH:mm}\n"));
-            bytes.AddRange(Encoding.ASCII.GetBytes($"Cashier: {receipt.CashierName}\n"));
-            bytes.AddRange(Encoding.ASCII.GetBytes($"Payment Method: {receipt.PaymentMethod}\n"));
-            bytes.AddRange(Encoding.ASCII.GetBytes(new string('-', (int)config.PaperWidth) + "\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes($"Cashier: {ReceiptSanitizer.SanitizeLineText(receipt.CashierName, cols)}\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes($"Payment Method: {ReceiptSanitizer.SanitizeLineText(receipt.PaymentMethod, cols)}\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes(new string('-', cols) + "\n"));
 
-            int cols = (int)config.PaperWidth;
             foreach (var item in receipt.Items)
             {
-                var line = $"{item.Quantity}x {item.ItemName}";
-                if (line.Length > cols - 12) line = line.Substring(0, cols - 12);
+                var cleanName = ReceiptSanitizer.SanitizeLineText(item.ItemName, cols - 12);
+                var line = $"{item.Quantity}x {cleanName}";
                 var priceStr = $"Rs. {item.LineTotal:F2}";
                 int pad = cols - line.Length - priceStr.Length;
                 if (pad < 1) pad = 1;
@@ -172,13 +186,22 @@ namespace ShopPro.Hardware
 
             bytes.AddRange(Encoding.ASCII.GetBytes(new string('-', cols) + "\n"));
 
-            // Totals Section
+            // Totals Section with Stage 3 GST Tax Model Breakdown (CGST / SGST / IGST)
             bytes.AddRange(Encoding.ASCII.GetBytes(FormatPair("Subtotal:", $"Rs. {receipt.Subtotal:F2}", cols) + "\n"));
             if (receipt.Discount > 0)
             {
                 bytes.AddRange(Encoding.ASCII.GetBytes(FormatPair("Discount:", $"Rs. {receipt.Discount:F2}", cols) + "\n"));
             }
-            bytes.AddRange(Encoding.ASCII.GetBytes(FormatPair("GST Tax:", $"Rs. {receipt.Tax:F2}", cols) + "\n"));
+
+            if (receipt.IgstAmount > 0)
+            {
+                bytes.AddRange(Encoding.ASCII.GetBytes(FormatPair("IGST Tax:", $"Rs. {receipt.IgstAmount:F2}", cols) + "\n"));
+            }
+            else
+            {
+                if (receipt.CgstAmount > 0) bytes.AddRange(Encoding.ASCII.GetBytes(FormatPair("CGST Tax:", $"Rs. {receipt.CgstAmount:F2}", cols) + "\n"));
+                if (receipt.SgstAmount > 0) bytes.AddRange(Encoding.ASCII.GetBytes(FormatPair("SGST Tax:", $"Rs. {receipt.SgstAmount:F2}", cols) + "\n"));
+            }
 
             // ESC E 1 : Enable Bold for Grand Total
             bytes.AddRange(new byte[] { 0x1B, 0x45, 0x01 });
@@ -191,7 +214,7 @@ namespace ShopPro.Hardware
 
             // ESC a 1 : Center Align Footer
             bytes.AddRange(new byte[] { 0x1B, 0x61, 0x01 });
-            bytes.AddRange(Encoding.ASCII.GetBytes(config.FooterMessage + "\n"));
+            bytes.AddRange(Encoding.ASCII.GetBytes(ReceiptSanitizer.SanitizeLineText(config.FooterMessage, cols) + "\n"));
 
             // Feed 3 lines + GS V 66 0 : Partial Paper Cut Command
             bytes.AddRange(Encoding.ASCII.GetBytes("\n\n\n"));
@@ -205,22 +228,22 @@ namespace ShopPro.Hardware
             int cols = (int)config.PaperWidth;
             var sb = new StringBuilder();
 
-            sb.AppendLine(CenterText(config.StoreName, cols));
-            sb.AppendLine(CenterText(config.AddressLine1, cols));
-            sb.AppendLine(CenterText(config.AddressLine2, cols));
-            sb.AppendLine(CenterText($"GSTIN: {config.Gstin}", cols));
+            sb.AppendLine(CenterText(ReceiptSanitizer.SanitizeLineText(config.StoreName, cols), cols));
+            sb.AppendLine(CenterText(ReceiptSanitizer.SanitizeLineText(config.AddressLine1, cols), cols));
+            sb.AppendLine(CenterText(ReceiptSanitizer.SanitizeLineText(config.AddressLine2, cols), cols));
+            sb.AppendLine(CenterText($"GSTIN: {ReceiptSanitizer.SanitizeLineText(config.Gstin, cols)}", cols));
             sb.AppendLine(new string('=', cols));
 
-            sb.AppendLine($"Invoice #: {receipt.InvoiceNumber}");
+            sb.AppendLine($"Invoice #: {ReceiptSanitizer.SanitizeLineText(receipt.InvoiceNumber, cols)}");
             sb.AppendLine($"Date: {receipt.TransactionDate:yyyy-MM-dd HH:mm}");
-            sb.AppendLine($"Cashier: {receipt.CashierName}");
-            sb.AppendLine($"Payment Method: {receipt.PaymentMethod}");
+            sb.AppendLine($"Cashier: {ReceiptSanitizer.SanitizeLineText(receipt.CashierName, cols)}");
+            sb.AppendLine($"Payment Method: {ReceiptSanitizer.SanitizeLineText(receipt.PaymentMethod, cols)}");
             sb.AppendLine(new string('-', cols));
 
             foreach (var item in receipt.Items)
             {
-                var line = $"{item.Quantity}x {item.ItemName}";
-                if (line.Length > cols - 12) line = line.Substring(0, cols - 12);
+                var cleanName = ReceiptSanitizer.SanitizeLineText(item.ItemName, cols - 12);
+                var line = $"{item.Quantity}x {cleanName}";
                 var priceStr = $"Rs. {item.LineTotal:F2}";
                 var padding = cols - line.Length - priceStr.Length;
                 if (padding < 1) padding = 1;
@@ -230,13 +253,21 @@ namespace ShopPro.Hardware
             sb.AppendLine(new string('-', cols));
             sb.AppendLine(FormatPair("Subtotal:", $"Rs. {receipt.Subtotal:F2}", cols));
             if (receipt.Discount > 0) sb.AppendLine(FormatPair("Discount:", $"Rs. {receipt.Discount:F2}", cols));
-            sb.AppendLine(FormatPair("GST Tax:", $"Rs. {receipt.Tax:F2}", cols));
+            if (receipt.IgstAmount > 0)
+            {
+                sb.AppendLine(FormatPair("IGST Tax:", $"Rs. {receipt.IgstAmount:F2}", cols));
+            }
+            else
+            {
+                if (receipt.CgstAmount > 0) sb.AppendLine(FormatPair("CGST Tax:", $"Rs. {receipt.CgstAmount:F2}", cols));
+                if (receipt.SgstAmount > 0) sb.AppendLine(FormatPair("SGST Tax:", $"Rs. {receipt.SgstAmount:F2}", cols));
+            }
             sb.AppendLine(FormatPair("GRAND TOTAL:", $"Rs. {receipt.Total:F2}", cols));
             sb.AppendLine(FormatPair("Amount Paid:", $"Rs. {receipt.AmountPaid:F2}", cols));
             sb.AppendLine(FormatPair("Change Due:", $"Rs. {receipt.ChangeDue:F2}", cols));
             sb.AppendLine(new string('=', cols));
 
-            sb.AppendLine(CenterText(config.FooterMessage, cols));
+            sb.AppendLine(CenterText(ReceiptSanitizer.SanitizeLineText(config.FooterMessage, cols), cols));
             return sb.ToString();
         }
 

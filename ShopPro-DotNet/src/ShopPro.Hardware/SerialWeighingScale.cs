@@ -3,6 +3,18 @@ using System.Text.RegularExpressions;
 
 namespace ShopPro.Hardware
 {
+    public class ScaleConfig
+    {
+        public string ComPort { get; set; } = "COM1";
+        public int BaudRate { get; set; } = 9600;
+        public string PollCommand { get; set; } = "W\r";
+        public int ReadTimeoutMs { get; set; } = 1000;
+        public string Protocol { get; set; } = "Toledo";
+        public string AllowedUnit { get; set; } = "kg";
+        public decimal MaxCapacityKg { get; set; } = 50.000m;
+        public decimal MinIncrementKg { get; set; } = 0.001m;
+    }
+
     public class ScaleReadResult
     {
         public bool Success { get; set; }
@@ -13,14 +25,13 @@ namespace ShopPro.Hardware
 
     /// <summary>
     /// Serial Weighing Scale Integration:
-    /// Protocol Spec: NCI / Toledo / Avery Berkel RS-232 ASCII Protocol (Baud: 9600, Data Bits: 8, Parity: None, Stop Bits: 1).
-    /// Serial Command: 'W\r' (Poll weight command sent from POS to Scale).
-    /// Response Format: ASCII string containing weight readings, e.g. "\x02ST,GS,+01.250kg\x03\r\n".
+    /// Protocol Spec: NCI / Toledo / Avery Berkel RS-232 ASCII Protocol.
+    /// Configurable BaudRate, Parity, DataBits, StopBits, PollCommand, ReadTimeoutMs, AllowedUnit, and MaxCapacityKg.
     /// 
     /// Commercial Safety:
     /// - Parses exact Toledo/NCI packet structures using CultureInfo.InvariantCulture.
-    /// - Explicitly rejects negative weights, unstable status (US), overload (OL), and malformed packets.
-    /// - Returns ScaleReadResult distinguishes zero tare weight (0.000 kg) from hardware read errors (null).
+    /// - Explicitly rejects negative weights, unstable status (US), overload (OL), and out of range weights (> MaxCapacityKg).
+    /// - Returns ScaleReadResult distinguishing zero tare weight (0.000 kg) from hardware read errors (null).
     /// </summary>
     public class SerialWeighingScale : IDisposable
     {
@@ -30,8 +41,9 @@ namespace ShopPro.Hardware
 
         private readonly ISerialPortDevice _device;
 
+        public ScaleConfig Config { get; set; } = new();
         public bool IsConnected => _device != null && _device.IsOpen;
-        public string ComPort { get; private set; } = "COM1";
+        public string ComPort => Config.ComPort;
         public string LastError { get; private set; } = string.Empty;
 
         public SerialWeighingScale(ISerialPortDevice? device = null)
@@ -41,24 +53,31 @@ namespace ShopPro.Hardware
 
         public (bool Success, string Message) Connect(string portName = "COM1", int baudRate = 9600)
         {
-            if (string.IsNullOrWhiteSpace(portName))
-                return (false, "Port name cannot be empty.");
+            Config.ComPort = portName;
+            Config.BaudRate = baudRate;
+            return Connect(Config);
+        }
 
-            var targetPort = portName.Trim();
+        public (bool Success, string Message) Connect(ScaleConfig config)
+        {
+            if (config == null || string.IsNullOrWhiteSpace(config.ComPort))
+                return (false, "Scale configuration or port name cannot be empty.");
 
-            // Reconnection Guard: If already connected to a different port, close existing connection first
+            Config = config;
+            var targetPort = Config.ComPort.Trim();
+
+            // Reconnection Guard: If already connected, close existing connection first
             if (_device.IsOpen)
             {
                 Disconnect();
             }
 
-            ComPort = targetPort;
             LastError = string.Empty;
 
             try
             {
-                _device.Open(targetPort, baudRate);
-                return (true, $"Connected to weighing scale at port '{targetPort}'.");
+                _device.Open(targetPort, Config.BaudRate);
+                return (true, $"Connected to weighing scale at port '{targetPort}' ({Config.BaudRate} baud).");
             }
             catch (Exception ex)
             {
@@ -127,9 +146,21 @@ namespace ShopPro.Hardware
             }
 
             // Convert pounds to kg if unit is lb
-            if (unit == "lb")
+            if (!string.IsNullOrEmpty(unit) && unit == "lb")
             {
                 parsedWeight = Math.Round(parsedWeight * 0.45359237m, 3, MidpointRounding.AwayFromZero);
+            }
+
+            // Enforce maximum capacity safety limit
+            if (parsedWeight > Config.MaxCapacityKg)
+            {
+                return new ScaleReadResult
+                {
+                    Success = false,
+                    WeightKg = null,
+                    Message = $"Weight reading ({parsedWeight:F3} kg) exceeds maximum scale capacity ({Config.MaxCapacityKg:F3} kg).",
+                    IsStable = isStable
+                };
             }
 
             return new ScaleReadResult
@@ -151,8 +182,8 @@ namespace ShopPro.Hardware
 
             try
             {
-                // Transmit 'W\r' ASCII poll command to Toledo / NCI scale
-                _device.Write("W\r");
+                // Transmit poll command to Toledo / NCI scale
+                _device.Write(string.IsNullOrWhiteSpace(Config.PollCommand) ? "W\r" : Config.PollCommand);
 
                 // Read ASCII response from serial buffer
                 string rawPacket = _device.ReadLine();
